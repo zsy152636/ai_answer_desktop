@@ -1,0 +1,10 @@
+{
+  "service" : "java-api",
+  "port" : 18765,
+  "baseUrl" : "http://127.0.0.1:18765",
+  "token" : "acf86452d654638cdd38c1579e99ea8208a925736da80f7f08b4713a49648881",
+  "tokenHeader" : "X-Session-Token",
+  "pid" : 31424,
+  "dataDir" : "E:\\SXXM\\AI智能答题(学习伙伴 Agent)\\.devdata\\java",
+  "startedAt" : "2026-10-10T15:04:50Z"
+}

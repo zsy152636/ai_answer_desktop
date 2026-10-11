@@ -1,0 +1,12 @@
+-- V3: 资料全文检索虚拟表（阶段 6）
+-- @requires fts5-trigram
+--
+-- 由迁移脚本创建（开发文档 §10.2）；但只在 SQLite 构建确实支持 FTS5 + trigram 时执行：
+-- 运行期缺少该能力时本脚本被显式跳过且不记入 schema_version，检索自动降级为关键词实现
+-- （开发文档 §10.1「失败则切换关键词检索实现」），环境具备能力后下次启动自动补上。
+--
+-- 设计要点：
+--   * FTS5 只保存可检索文本与 chunk_id，不作为原文唯一存储（原文在 document_chunk.content）；
+--   * 不冗余 index_version：按版本筛选通过 JOIN document_chunk 完成，避免版本信息出现两个权威来源；
+--   * tokenize 里不能出现分号（迁移执行器按 ; 切分语句），因此不写任何多余参数。
+CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(content, chunk_id UNINDEXED, tokenize='trigram');

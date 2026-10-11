@@ -1,0 +1,4 @@
+# pnpm 11 默认拒绝执行依赖的构建脚本；Electron 的 postinstall 正是下载运行时二进制的那一步，
+# 必须显式放行，否则 `electron .` 会因为缺少二进制而无法启动。
+allowBuilds:
+  electron: true

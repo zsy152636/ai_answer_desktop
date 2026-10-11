@@ -1,0 +1,20 @@
+{
+  "name": "ai-answer-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI 智能答题系统 · Electron 桌面壳（主进程/preload，负责子进程编排与安全边界）",
+  "main": "dist/main/main.js",
+  "packageManager": "pnpm@11.2.2",
+  "scripts": {
+    "preinstall": "node scripts/check-package-manager.mjs",
+    "build": "tsc -p tsconfig.json",
+    "start": "pnpm build && node scripts/start.mjs",
+    "start:only": "node scripts/start.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.3.1",
+    "typescript": "^5.7.2"
+  }
+}

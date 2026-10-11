@@ -1,0 +1,9 @@
+# 本地虚拟环境与运行产物
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.smoke-endpoint.json
+smoke-stdout.log
+smoke-stderr.log
+pytest-out.txt

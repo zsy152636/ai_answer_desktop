@@ -1,0 +1,32 @@
+{
+  "name": "@ai-answer/renderer",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AI 智能答题系统 · Vue 3 渲染层",
+  "type": "module",
+  "packageManager": "pnpm@11.2.2",
+  "scripts": {
+    "preinstall": "node scripts/check-package-manager.mjs",
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:local-tmp": "node scripts/with-local-tmp.mjs build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "element-plus": "^2.8.8",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vue-tsc": "^2.1.10"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}

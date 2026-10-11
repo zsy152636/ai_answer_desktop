@@ -1,0 +1,39 @@
+server:
+  # 只绑定 loopback：本机业务服务不得对外网卡监听（开发文档 §2.2）
+  address: 127.0.0.1
+  # 端口 0 = 由操作系统分配随机端口，实际端口写入端点文件供 Electron 读取
+  port: ${AIA_JAVA_PORT:0}
+  shutdown: graceful
+  max-http-request-header-size: 32KB
+
+spring:
+  application:
+    name: ai-answer-java-api
+  lifecycle:
+    timeout-per-shutdown-phase: 15s
+  jackson:
+    default-property-inclusion: always
+    serialization:
+      write-dates-as-timestamps: false
+    time-zone: UTC
+  mvc:
+    problemdetails:
+      enabled: false
+
+logging:
+  config: classpath:logback-spring.xml
+
+aia:
+  # 以下全部可由命令行覆盖，例如 --aia.data-dir=D:\data
+  data-dir: ${AIA_DATA_DIR:}
+  endpoint-file: ${AIA_ENDPOINT_FILE:}
+  python-endpoint-file: ${AIA_PYTHON_ENDPOINT_FILE:}
+  session-token: ${AIA_SESSION_TOKEN:}
+  auto-backup-enabled: true
+  auto-backup-hours: 24
+  backup-retention-count: 30
+  idempotency-retention-days: 7
+  log-tail-lines: 500
+  max-payload-bytes: 1048576
+  # 说明（v1.1）：不再有 credential-backend —— LLM 密钥存在 <UserData>/config/setting.json，
+  # 由 ConfigService 热加载（ADR-014 取代 ADR-004）。

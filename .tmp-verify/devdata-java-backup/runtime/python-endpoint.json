@@ -1,0 +1,9 @@
+{
+  "service": "python-ai",
+  "port": 60998,
+  "baseUrl": "http://127.0.0.1:60998",
+  "token": "c64e4cfa2ca613d95f2de3630730b6aeaef3de3b917e11c0ce5c76b31996df9b",
+  "tokenHeader": "X-Internal-Token",
+  "pid": 37800,
+  "startedAt": "2026-10-10T15:01:28Z"
+}

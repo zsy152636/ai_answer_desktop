@@ -1,0 +1,56 @@
+[注] 本文件是 v1.1 之前那次真实冒烟运行的原始记录（含当时的乱码与控制台编码问题），
+     仅字段名按契约 §7 同步为 profileRef，数值未重新测量；如需最新数据请重跑 scripts/smoke_ollama.ps1。
+
+=== endpoint 文件 ===
+{"service":"python-ai","port":58945,"baseUrl":"http://127.0.0.1:58945","token":"ebe74c30d83f08d55c7761ade2fb9b3c41280e08d58aed12f4c11eabd514f407","tokenHeader":"X-Internal-Token","pid":37412,"startedAt":"2026-10-10T14:52:02Z"}
+tokenHeader=X-Internal-Token pid=37412 startedAt=2026-10-10T14:52:02Z tokenLength=64
+
+=== GET /health (无令牌) ===
+{"status":"UP","service":"python-ai","version":"1.0.0","providers":["openai-compatible","ollama"]}
+
+=== 无令牌访问 /api/v1/ai/explain（应 401） ===
+HTTP 401
+
+
+=== POST /api/v1/ai/test-connection（本地 Ollama，allowLocalNetwork=true） ===
+{"success":true,"data":{"ok":true,"category":"ok","latencyMs":31,"httpStatus":200,"modelEcho":"qwen3:8b","message":"ç«¯ç¹å¯è¾¾ï¼è¿å 1 ä¸ªæ¨¡å","suggestion":"è¿æ¥æ­£å¸¸ï¼å¯ç»§ç»­ç¨äºç­é¢ä¸å¤åã"},"error":null,"requestId":"req_b18ecd6cc5b302b9","timestamp":"2026-10-10T14:52:02Z"}
+
+=== GET /api/v1/ai/profiles/ollama-local/probe（不使用密钥） ===
+{"success":true,"data":{"profileId":"ollama-local","reachable":true,"models":["qwen3:8b"],"capabilities":{"chatCompletions":true,"modelsEndpoint":true}},"error":null,"requestId":"req_56db90cb94d368fa","timestamp":"2026-10-10T14:52:02Z"}
+
+=== POST /api/v1/ai/explain（真实 qwen3:8b） ===
+success=True model=qwen3:8b latencyMs=20547 profileRef=profile://ollama-local tipsCount=3 explanationLength=325 requestId=req_df551d9a580c0e15
+usage: {"prompt_tokens":448,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens":683,"total_tokens":1131}
+explanation(前 400 字): é¢ç®å¯è½æ¶åTCPçæä¸ªåæ°æç¹æ§ï¼å¦æå¤§æ®µå¤§å°MSSãè¿æ¥ç¶ææ°ç­ï¼ãæ­£ç¡®ç­æ¡Cè¡¨ææ­£ç¡®æ°å¼/éé¡¹åºä¸º3ï¼èå­¦çéBå±äºæ°å¼æ··æ·ãä¾å¦è¥é¢ç®æ¯'TCPæå¤§æ®µå¤§å°ï¼MSSï¼éå¸¸ä¸ºï¼'ï¼æ åç­æ¡1460å­èå¯¹åºéé¡¹Cï¼å­¦çå¯è½è¯¯è®°ä¸º1450å­èï¼éé¡¹Bï¼ã
+tips: ["TCPä¸æ¬¡æ¡æé3æ¬¡ACKç¡®è®¤","MSSé»è®¤1460å­èï¼1500-20ï¼","è¿æ¥ç¶ææ°è¶\u008510ç§ï¼å¿ç®åè®°3"]
+
+=== POST /api/v1/ai/grade-subjective（真实 qwen3:8b） ===
+success=True suggestedScore=6.0/10.0 confidence=0.7 needsReview=True model=qwen3:8b latencyMs=7469 requestId=req_a6f28cf91abb4e86
+criteria: [{"id":"c1","score":6.0,"reason":"åç­æ­£ç¡®åä¸¾äºTCPä¸æ¬¡æ¡æçä¸ä¸ªå\u0085³é®æ­¥éª¤ï¼SYNãSYN/ACKãACKï¼ï¼ä½ç¬¦å·ä½¿ç¨ä¸åèç­æ¡å­å¨ç»å¾®å·®å¼"},{"id":"c2","score":0.0,"reason":"æªå®æ´æè¿°æ¡æè¿ç¨çåç»­æ­¥éª¤æè¡¥å\u0085\u0085è¯´æï¼ä»\u0085éå¤äºåºç¡æ­¥éª¤"}]
+先停止服务进程，再读取日志
+
+=== 自定义日志（末尾 20 行，检查是否泄漏令牌/密钥） ===
+2026-10-10 22:52:02,035 INFO python_ai python-ai 已启动 baseUrl=http://127.0.0.1:58945 providers=openai-compatible,ollama version=1.0.0
+2026-10-10 22:52:02,035 INFO python_ai 内部令牌已就绪（脱敏：****f407，tokenHeader=X-Internal-Token）
+2026-10-10 22:52:02,050 INFO python_ai endpoint 文件已写入：E:\SXXM\AI智能答题(学习伙伴 Agent)\services\python-ai\.smoke-endpoint.json
+2026-10-10 22:52:02,412 WARNING python_ai AiError code=UNAUTHORIZED category=auth status=401 path=/api/v1/ai/explain requestId=req_349ca69a1f6917c6 message=内部令牌缺失或无效
+2026-10-10 22:52:02,485 INFO httpx HTTP Request: GET http://127.0.0.1:11434/v1/models "HTTP/1.1 200 OK"
+2026-10-10 22:52:02,485 INFO python_ai.api.ai test-connection ok=True category=ok profileId=ollama-local latencyMs=31 requestId=req_b18ecd6cc5b302b9
+2026-10-10 22:52:02,509 INFO httpx HTTP Request: GET http://127.0.0.1:11434/v1/models "HTTP/1.1 200 OK"
+2026-10-10 22:52:02,509 INFO python_ai.api.ai probe profileId=ollama-local provider=openai-compatible reachable=True models=1 requestId=req_56db90cb94d368fa
+2026-10-10 22:52:23,065 INFO httpx HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-10 22:52:23,066 INFO python_ai.api.ai explain ok profileId=ollama-local model=qwen3:8b latencyMs=20547 requestId=req_df551d9a580c0e15
+2026-10-10 22:52:30,556 INFO httpx HTTP Request: POST http://127.0.0.1:11434/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-10 22:52:30,566 INFO python_ai.api.ai grade-subjective ok profileId=ollama-local model=qwen3:8b score=6.0/10.0 requestId=req_a6f28cf91abb4e86
+
+日志中出现完整内部令牌: False
+日志中出现 apiKey: False
+=== stderr ===
+INFO:     Started server process [37412]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:58945 (Press CTRL+C to quit)
+
+
+[进程清理] pid=26488 HasExited=True
+端口 58945 已释放

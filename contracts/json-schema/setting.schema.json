@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-answer-desktop.local/contracts/json-schema/setting.schema.json",
+  "title": "Application Setting",
+  "description": "用户配置文件 <UserData>/config/setting.json 的唯一权威 Schema。运行期由 Java 侧热加载校验（SettingValidator），构建期随 contracts/json-schema 目录整体复制进 classpath。跨字段规则（profile id 唯一、defaultProfileId 必须指向存在的 profile）无法用纯 JSON Schema 表达，由 SettingValidator 一并检查。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "llm"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "配置版本。不支持的版本一律拒绝加载，并保留上一份有效配置。"
+    },
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "应用级偏好。全部可选，缺失时由调用方取默认值。",
+      "properties": {
+        "language": {
+          "type": "string",
+          "enum": ["zh-CN", "en-US"],
+          "description": "界面语言。"
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profiles"],
+      "properties": {
+        "defaultProfileId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "description": "默认档案 id。null 或缺失表示未指定默认档案（AI 能力关闭）。"
+        },
+        "profiles": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/profile" }
+        }
+      }
+    }
+  },
+  "$comment": "provider 白名单必须与 services/python-ai/app/config.py 的 SUPPORTED_PROVIDERS 保持一致（v1 实现 openai-compatible 与 ollama）。apiKey 是本文件的唯一明文密钥字段：日志、异常与审计事件中一律不得出现其值。",
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "provider", "baseUrl", "model"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["openai-compatible", "ollama"],
+          "description": "provider 白名单，与 Python 侧 SUPPORTED_PROVIDERS 一致。"
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 512,
+          "pattern": "^https?://[^\\s]+$",
+          "description": "不含尾部斜杠的 API 根地址，例如 http://127.0.0.1:11434/v1。"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "apiKey": {
+          "type": ["string", "null"],
+          "maxLength": 4096,
+          "description": "明文密钥（唯一不再依赖 OS 凭据存储的字段）。null 与「字段缺失」等价，都表示「该档案没有密钥」；脱敏导出的文件会把它置为 null，因此导出文件本身仍是本 Schema 合法的（可直接再次导入/校验）。清除密钥时实现使用移除字段而非写 null。绝不写入日志、异常消息或审计事件。"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900,
+          "default": 60
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 5
+        },
+        "allowLocalNetwork": {
+          "type": "boolean",
+          "default": false,
+          "description": "用户显式声明“本地/内网模型”。为 false 时 baseUrl 解析到 loopback、私网、链路本地或云元数据地址一律拒绝（BASE_URL_BLOCKED）。"
+        },
+        "parameters": {
+          "type": "object",
+          "description": "供应商特定参数（透传给 Python AI 服务）。",
+          "properties": {
+            "topP": { "type": "number", "minimum": 0, "maximum": 1 },
+            "maxTokens": { "type": "integer", "minimum": 1, "maximum": 131072 },
+            "stream": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

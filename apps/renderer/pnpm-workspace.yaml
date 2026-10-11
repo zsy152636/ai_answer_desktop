@@ -1,0 +1,9 @@
+packages:
+  - '.'
+
+# pnpm 11 起，构建脚本白名单改由本文件承载：
+#   - esbuild 需要 postinstall 校验/安装原生二进制
+#   - vue-demi 需要切换 vue2/vue3 入口
+allowBuilds:
+  esbuild: true
+  vue-demi: true

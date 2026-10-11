@@ -1,0 +1,11 @@
+export * from './client';
+export * from './runtime';
+export * as questionsApi from './questions';
+export * as papersApi from './papers';
+export * as attemptsApi from './attempts';
+export * as wrongQuestionsApi from './wrongQuestions';
+export * as llmProfilesApi from './llmProfiles';
+export * as systemApi from './system';
+export * as dashboardApi from './dashboard';
+export * as tasksApi from './tasks';
+export * as documentsApi from './documents';

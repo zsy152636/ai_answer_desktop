@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-answer-desktop.local/contracts/json-schema/llm-config.schema.json",
+  "title": "LLM Config",
+  "description": "LLM 配置档案文件的唯一权威 Schema。导入、导出、后端校验与测试共用此文件；导出永不包含明文密钥。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profiles"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "配置版本。不支持的版本返回 CONFIG_SCHEMA_UNSUPPORTED。"
+    },
+    "defaultProfileId": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "description": "默认档案 id。允许为 null 表示未指定默认档案。"
+    },
+    "exportedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "仅在导出文件中出现；导入时忽略。"
+    },
+    "profiles": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$comment": "跨字段规则（defaultProfileId 必须指向存在的 profile；id 在 profiles 内唯一）属于结构约束，无法用纯 JSON Schema 表达，由后端与前端共用同一校验实现一并检查，错误码 VALIDATION_ERROR。",
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "provider", "baseUrl", "model"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["openai-compatible", "ollama", "anthropic", "azure-openai"],
+          "description": "provider 白名单。v1 实现 openai-compatible 与 ollama（Ollama 原生端点），其余为预留。"
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 512,
+          "pattern": "^https?://[^\\s]+$",
+          "description": "不含尾部斜杠的 API 根地址，例如 http://127.0.0.1:11434/v1。"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "apiKeyRef": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^credential://[A-Za-z0-9._/-]+$",
+          "description": "凭据引用，形如 credential://llm/<profileId>。任何情况下都不是明文密钥。"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900,
+          "default": 60
+        },
+        "connectTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120,
+          "default": 5
+        },
+        "allowLocalNetwork": {
+          "type": "boolean",
+          "default": false,
+          "description": "用户显式声明“本地/内网模型”。为 false 时 baseUrl 解析到 loopback、私网、链路本地或云元数据地址一律拒绝（BASE_URL_BLOCKED）。"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+            "topP": { "type": "number", "minimum": 0, "maximum": 1 },
+            "maxTokens": { "type": "integer", "minimum": 1, "maximum": 131072 },
+            "stream": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

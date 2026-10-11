@@ -1,0 +1,3267 @@
+# =====================================================================================
+# AI 智能答题系统 · Java 业务服务 OpenAPI 契约（v1）
+#
+# ⚠️ 本文件由**真实实现反推生成**，不是设计稿的手工抄写。
+#    权威来源（按优先级）：
+#      1. services/java-api/src/main/java/com/aia/answer/web/*.java        （路径与操作）
+#      2. services/java-api/src/main/java/com/aia/answer/domain/*.java    （DTO 与字段名）
+#      3. services/java-api/src/main/java/com/aia/answer/common/{ApiResponse,ApiException,ErrorCode,PageResult,Ids}.java
+#      4. docs/api/api-contract.md                                        （契约说明）
+#      5. contracts/json-schema/llm-config.schema.json                    （LLM 配置 Schema）
+#
+# 改动顺序（不可颠倒）：
+#      ① 先改契约文档 docs/api/api-contract.md ──② 再改实现 ──③ 最后同步本文件。
+#    任何"只改本文件"或"只改实现"的改动都会让三者不一致，评审时按契约违规处理。
+#
+# 生成基线：Java 实现 commit 状态 = 端到端冒烟 78 项 + 单测 22 项全通过的版本。
+# =====================================================================================
+openapi: 3.1.0
+
+info:
+  title: AI 智能答题系统 Java API
+  version: 1.0.0
+  description: |
+    本机业务服务（Spring Boot 3），只监听 `127.0.0.1`，端口由操作系统随机分配。
+
+    - **鉴权**：除 `GET /health` 外，所有 `/api/**` 请求必须携带 `X-Session-Token`
+      （Java 启动时随机生成、只在本进程生命周期内有效、退出即失效）。
+      缺失或错误 → `401` + `UNAUTHORIZED`。
+    - **Host/Origin 校验**：`Host` 必须是 `127.0.0.1` / `localhost` / `::1`；
+      `Origin` 若存在必须是 `http://127.0.0.1*`、`http://localhost*`、`http://[::1]*`、
+      `file://` 或 `app://`（`Origin: null` 视为可信的非浏览器调用）。否则 `403` + `ORIGIN_REJECTED`。
+    - **统一包络**：除 `GET /health` 外，所有响应都是 `ApiResponse`
+      （`success` / `data` / `error` / `requestId` / `timestamp`）。
+      Java 的 Jackson 配置为 `default-property-inclusion: always`，因此 DTO 字段**不会被省略**，
+      可空字段会显式返回 `null`。
+    - **幂等**：任何 `POST`/`PUT`/`PATCH` 请求带 `Idempotency-Key`（1-128 字符）时启用；
+      同键同载荷重放首次结果（响应头 `Idempotent-Replay: true`），同键不同载荷 → `409` + `IDEMPOTENCY_CONFLICT`。
+    - **时间**：全部 UTC ISO-8601，形如 `2026-10-10T14:00:00Z`。
+    - **标识**：`<prefix>_<26 位 Crockford Base32 ULID>`，如 `q_01HQ...`、`at_...`、`task_...`；
+      `requestId` 形如 `req_` + 26 位小写 ULID（见 `Ids.requestId()`）。
+    - **分页**：`page` 从 1 开始、`size` 默认 20、范围 1-100，越界 → `400` + `VALIDATION_ERROR`。
+
+servers:
+  - url: http://127.0.0.1:{port}
+    description: 本机业务服务（端口由操作系统随机分配，实际值写入运行时端点文件）
+    variables:
+      port:
+        default: '53123'
+        description: '运行时随机分配的端口；从 `<data-dir>/runtime/java-endpoint.json` 读取'
+
+security:
+  - sessionToken: []
+
+tags:
+  - name: meta
+    description: 健康与元信息（契约 §1）
+  - name: questions
+    description: 题库与题目版本（契约 §2）
+  - name: papers
+    description: 试卷与发布快照（契约 §3）
+  - name: attempts
+    description: 答题与判分（契约 §4）
+  - name: wrong-questions
+    description: 错题闭环（契约 §5）
+  - name: llm-profiles
+    description: LLM 配置与凭据（契约 §6）
+  - name: ai
+    description: AI 能力对外入口（契约 §7，内部转调 Python 服务）
+  - name: system
+    description: 系统设置与备份（契约 §8）
+  - name: tasks
+    description: 异步任务（契约 §9）
+  - name: documents
+    description: 资料库与本地检索（契约 §11，阶段 6）
+  - name: search
+    description: 本地全文检索与索引状态（契约 §11，阶段 6）
+
+paths:
+
+  # ==================================================================================
+  # §1 健康与元信息
+  # ==================================================================================
+  /health:
+    get:
+      tags: [meta]
+      operationId: health
+      summary: 健康检查（不鉴权）
+      description: |
+        唯一不校验会话令牌且不返回包络的端点（返回裸对象）。字段来自
+        `HealthController.health()` + `AppInfo`：`service` 固定 `java-api`，`version` 固定 `1.0.0`。
+      security: []
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: UP
+                service: java-api
+                version: 1.0.0
+                schemaVersion: 3
+                uptimeSeconds: 42
+
+  /api/v1/meta:
+    get:
+      tags: [meta]
+      operationId: getMeta
+      summary: 应用元信息
+      description: |
+        数据目录、数据库路径与大小、schema 版本、FTS5 能力、AI 服务状态。
+        `fts5Available` 与 `contractVersion` **只在**本接口返回。
+      responses:
+        '200': { $ref: '#/components/responses/OkMetaView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/dashboard:
+    get:
+      tags: [meta]
+      operationId: getDashboard
+      summary: 首页仪表盘统计
+      responses:
+        '200': { $ref: '#/components/responses/OkDashboardView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================================================================================
+  # §2 题库与题目版本
+  # ==================================================================================
+  /api/v1/questions:
+    get:
+      tags: [questions]
+      operationId: listQuestions
+      summary: 题目分页列表
+      description: |
+        过滤参数白名单：`page,size,q,questionType,status,tag,sort`。
+        `sort` 允许值（`QuestionRepository.orderClause`）：`updatedAt`、`-updatedAt`、
+        `createdAt`、`-createdAt`；缺省 `-updatedAt`。白名单以外的 `sort` → `400` + `VALIDATION_ERROR`。
+        `q` 同时匹配标题与当前版本题干；`tag` 精确匹配知识点标签（JSON 数组包含）。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/SearchQ'
+        - name: questionType
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionType' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionStatus' }
+        - name: tag
+          in: query
+          description: 知识点标签（精确匹配）
+          schema: { type: string, maxLength: 32 }
+        - name: sort
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionSort' }
+      responses:
+        '200':
+          description: 分页题目列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/QuestionSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [questions]
+      operationId: createQuestion
+      summary: 建题（同时创建 version 1）
+      description: |
+        成功返回 `201`。请求体字段级规则见 `QuestionDtos.SaveRequest` 与
+        `GradingService.validateAnswer`（选择题 2-10 个选项且 key 唯一、`answer.value` 必须命中正确选项等）。
+        支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionSaveRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/CreatedQuestionView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+
+  /api/v1/questions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/QuestionId'
+    get:
+      tags: [questions]
+      operationId: getQuestion
+      summary: 题目详情（可读历史版本）
+      parameters:
+        - name: versionNo
+          in: query
+          description: 指定历史版本号；省略则返回当前版本
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200': { $ref: '#/components/responses/OkQuestionView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [questions]
+      operationId: updateQuestion
+      summary: 修改题目（内容变化则新建版本）
+      description: |
+        题干/选项/答案/rubric/标签任一变化 → 创建新 `question_version` 并把 `current_version_id` 指向它；
+        否则只更新 `title`/`difficulty`。并发用 `expectedVersionNo` 做乐观锁，
+        不匹配 → `409` + `VERSION_CONFLICT`。题型不可更改（`400` + `VALIDATION_ERROR`）。
+        支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuestionSaveRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkQuestionView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '版本冲突（`VERSION_CONFLICT`）或幂等键冲突（`IDEMPOTENCY_CONFLICT`）'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+    delete:
+      tags: [questions]
+      operationId: deleteQuestion
+      summary: 删除草稿题目
+      description: '仅允许删除从未被引用且从未发布的草稿，否则 `409` + `STATE_CONFLICT`。'
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [deleted, id]
+                        properties:
+                          deleted: { type: boolean, const: true }
+                          id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/questions/{id}/publish:
+    post:
+      tags: [questions]
+      operationId: publishQuestion
+      summary: 发布题目（draft → published）
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+      responses:
+        '200': { $ref: '#/components/responses/OkQuestionView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 状态不允许发布（已发布 / 已归档）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/v1/questions/{id}/archive:
+    post:
+      tags: [questions]
+      operationId: archiveQuestion
+      summary: 归档题目
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+      responses:
+        '200': { $ref: '#/components/responses/OkQuestionView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/questions/{id}/versions:
+    get:
+      tags: [questions]
+      operationId: listQuestionVersions
+      summary: 题目版本列表（按版本号倒序）
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/VersionBrief' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================================
+  # §3 试卷与发布快照
+  # ==================================================================================
+  /api/v1/papers:
+    get:
+      tags: [papers]
+      operationId: listPapers
+      summary: 试卷分页列表
+      description: '过滤参数白名单 `page,size,q,status`；固定按 `updated_at DESC` 排序（无 sort 参数）。'
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/SearchQ'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/PaperStatus' }
+      responses:
+        '200':
+          description: 分页试卷列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PaperSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [papers]
+      operationId: createPaper
+      summary: 创建试卷（草稿）
+      description: '成功返回 `201`。`questions[].score` 省略时默认每题 5 分。支持 `Idempotency-Key`。'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperSaveRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/CreatedPaperView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/papers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PaperId'
+    get:
+      tags: [papers]
+      operationId: getPaper
+      summary: 试卷详情（含题目组成）
+      responses:
+        '200': { $ref: '#/components/responses/OkPaperView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [papers]
+      operationId: updatePaper
+      summary: 修改试卷（仅 draft）
+      description: '非 `draft` 状态 → `409` + `STATE_CONFLICT`。支持 `Idempotency-Key`。'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaperSaveRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkPaperView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/papers/{id}/publish:
+    post:
+      tags: [papers]
+      operationId: publishPaper
+      summary: 发布试卷并生成不可变快照
+      description: |
+        题数 ≥1、总分 >0、引用题目版本必须存在且未归档，否则 `409` + `STATE_CONFLICT`。
+        返回 `PaperSnapshotView`；发布后旧快照与既有作答结果永不改变。
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+      responses:
+        '200': { $ref: '#/components/responses/OkPaperSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/papers/{id}/archive:
+    post:
+      tags: [papers]
+      operationId: archivePaper
+      summary: 归档试卷
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+      responses:
+        '200': { $ref: '#/components/responses/OkPaperView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/papers/{id}/snapshots:
+    get:
+      tags: [papers]
+      operationId: listPaperSnapshots
+      summary: 试卷快照列表（版本号倒序）
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+      responses:
+        '200':
+          description: 快照列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/PaperSnapshotView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/papers/{id}/snapshots/{snapshotId}:
+    get:
+      tags: [papers]
+      operationId: getPaperSnapshot
+      summary: 读取历史快照
+      parameters:
+        - $ref: '#/components/parameters/PaperId'
+        - name: snapshotId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/OkPaperSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================================
+  # §4 答题与判分
+  # ==================================================================================
+  /api/v1/attempts:
+    get:
+      tags: [attempts]
+      operationId: listAttempts
+      summary: 作答分页列表
+      description: '过滤参数白名单 `page,size,status,paperId`；固定按 `updated_at DESC` 排序。'
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AttemptStatus' }
+        - name: paperId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 分页作答列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AttemptSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [attempts]
+      operationId: startAttempt
+      summary: 开始作答（试卷 / 错题练习）
+      description: |
+        成功返回 `201`。`mode` ∈ `paper`（默认，必须提供已发布试卷的 `paperId`）或
+        `wrong_practice`（可按 `wrongQuestionIds` 或 `limit` 取到期错题）。
+        试卷未发布 → `409` + `STATE_CONFLICT`；错题本为空 → `409` + `STATE_CONFLICT`。
+        请求体可省略（等价于 `{"mode":"paper"}`，此时因缺 `paperId` 返回 `400`）。
+        支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AttemptStartRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/CreatedAttemptSheet' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/attempts/{id}:
+    get:
+      tags: [attempts]
+      operationId: getAttemptSheet
+      summary: 答题卡（未提交时不含答案与解析）
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptSheet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/attempts/{id}/answers/{snapshotQuestionId}:
+    put:
+      tags: [attempts]
+      operationId: saveAttemptAnswer
+      summary: 幂等保存单题作答
+      description: |
+        `attempt.status` 必须 `in_progress`，否则 `409` + `STATE_CONFLICT`；
+        `snapshotQuestionId` 不属于本次作答 → `400` + `VALIDATION_ERROR`。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+        - $ref: '#/components/parameters/SnapshotQuestionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaveAnswerRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkAnswerView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/attempts/{id}/submit:
+    post:
+      tags: [attempts]
+      operationId: submitAttempt
+      summary: 提交并确定性判分
+      description: |
+        幂等提交：持久化全部作答 → 确定性判分 → 生成错题记录 → 主观题排队 AI 评分任务
+        （排队失败不影响已保存的作答）。返回 `AttemptResult`。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/attempts/{id}/result:
+    get:
+      tags: [attempts]
+      operationId: getAttemptResult
+      summary: 作答结果（含逐题判分明细）
+      description: '未提交时 → `409` + `STATE_CONFLICT`（"本次作答尚未提交，暂不能查看结果"）。'
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/attempts/{id}/abandon:
+    post:
+      tags: [attempts]
+      operationId: abandonAttempt
+      summary: 放弃作答（in_progress → abandoned）
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptSheet' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/attempts/{id}/ai-grade:
+    post:
+      tags: [attempts]
+      operationId: requestAiGrading
+      summary: 为待复核主观题排队 AI 评分任务
+      description: |
+        为本次作答所有 `pending_review` 主观题入队 `ai_grade` 任务（幂等键 `ai_grade:{answerId}`）。
+        未提交 → `409`；没有待复核主观题 → `409`。任务完成后建议分写入
+        `gradingDetail.suggestedScore`，但 `gradingStatus` **仍是** `pending_review`，
+        必须经人工评分端点才生效。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已排队的任务 id 列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AiGradeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/attempts/{id}/answers/{snapshotQuestionId}/grade:
+    post:
+      tags: [attempts]
+      operationId: gradeSubjectiveManually
+      summary: 人工评分（确认或覆盖 AI 建议分）
+      description: |
+        `score` 必须在 `[0, maxScore]`，否则 `400` + `VALIDATION_ERROR`；
+        未提交 → `409` + `STATE_CONFLICT`。返回重算总分后的 `AttemptResult`
+        （该题 `gradingMethod=manual`、`gradingStatus=graded`）。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/AttemptId'
+        - $ref: '#/components/parameters/SnapshotQuestionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualGradeRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  # ==================================================================================
+  # §5 错题闭环
+  # ==================================================================================
+  /api/v1/wrong-questions:
+    get:
+      tags: [wrong-questions]
+      operationId: listWrongQuestions
+      summary: 错题分页列表
+      description: |
+        过滤参数白名单 `page,size,status,dueOnly,tag,questionType,sort`。
+        `sort` 允许值（`WrongQuestionRepository.orderClause`）：`-updatedAt`、`updatedAt`、
+        `nextReviewAt`、`lastWrongAt`、`wrongCount`；缺省 `-updatedAt`。
+        `dueOnly=true` 时只返回 `next_review_at <= now` 且状态为 `active`/`reviewing` 的错题。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/WrongStatus' }
+        - name: dueOnly
+          in: query
+          schema: { type: boolean, default: false }
+        - name: tag
+          in: query
+          schema: { type: string, maxLength: 32 }
+        - name: questionType
+          in: query
+          schema: { $ref: '#/components/schemas/QuestionType' }
+        - name: sort
+          in: query
+          schema: { $ref: '#/components/schemas/WrongQuestionSort' }
+      responses:
+        '200':
+          description: 分页错题列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/WrongQuestionPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/wrong-questions/practice:
+    post:
+      tags: [wrong-questions]
+      operationId: practiceWrongQuestions
+      summary: 创建错题练习作答
+      description: |
+        请求体可省略；缺省取全部到期错题。错题本为空 → `409` + `STATE_CONFLICT`。
+        返回 `AttemptSheet`（`mode=wrong_practice`）。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PracticeRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkAttemptSheet' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/wrong-questions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/WrongQuestionId'
+    get:
+      tags: [wrong-questions]
+      operationId: getWrongQuestion
+      summary: 错题详情 + 最近 20 条复习记录
+      responses:
+        '200': { $ref: '#/components/responses/OkWrongQuestionDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [wrong-questions]
+      operationId: patchWrongQuestionStatus
+      summary: 手动干预错题状态
+      description: |
+        `status` ∈ `active`/`reviewing`/`mastered`/`archived`。置为 `mastered`/`archived` 会清空
+        `nextReviewAt`；置为 `active` 且 `nextReviewAt` 为空时按当前 `wrongCount` 重新排期。
+        支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WrongStatusRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkWrongQuestionDetail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/wrong-questions/{id}/review:
+    post:
+      tags: [wrong-questions]
+      operationId: reviewWrongQuestion
+      summary: 记录一次复习并更新调度
+      description: |
+        `result` ∈ `correct`/`wrong`。答错：`wrongCount+1`、`correctStreak=0`、状态 `active`、
+        `nextReviewAt=now+interval(wrongCount)`；复习正确：`correctStreak+1`，
+        达到 2 次 → `mastered` 且 `nextReviewAt=null`，否则 `reviewing` 并按 `interval(wrongCount)` 排期。
+        `interval(n)`：1→1 天、2→3 天、3→7 天、n≥4→15 天。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/WrongQuestionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WrongReviewRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkWrongQuestionDetail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================================
+  # §6 LLM 配置与凭据
+  # ==================================================================================
+  /api/v1/settings/llm-profiles:
+    get:
+      tags: [llm-profiles]
+      operationId: listLlmProfiles
+      summary: 档案列表（不含明文密钥）
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [llm-profiles]
+      operationId: createLlmProfile
+      summary: 新建档案
+      description: '成功返回 `201`。档案 id 已存在 → `409` + `STATE_CONFLICT`。支持 `Idempotency-Key`。'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpsertRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/CreatedProfileView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/settings/llm-profiles/validate:
+    post:
+      tags: [llm-profiles]
+      operationId: validateLlmConfig
+      summary: 纯校验 LLM 配置（不写库、不发网络请求）
+      description: |
+        `config` 为 `llm-config.json` 内容（见 `contracts/json-schema/llm-config.schema.json`）。
+        JSON 语法错误 → `400` + `CONFIG_JSON_INVALID`；版本不支持 → `400` + `CONFIG_SCHEMA_UNSUPPORTED`；
+        结构/跨字段规则不满足则在 `data.errors` 中逐条返回（此时 `valid=false`，HTTP 仍为 `200`）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ValidateRequest' }
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ValidationResponse' }
+        '400':
+          description: 'JSON 语法错误（`CONFIG_JSON_INVALID`）或版本不支持（`CONFIG_SCHEMA_UNSUPPORTED`）'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/settings/llm-profiles/test-connection:
+    post:
+      tags: [llm-profiles]
+      operationId: testLlmConnection
+      summary: 模型连接测试（短超时、最小请求）
+      description: |
+        `profile` 与 `profileId` 至少提供其一（都缺 → `400` + `VALIDATION_ERROR`）。
+        Java 转发给 Python 服务并统一错误分类，**不返回请求头与密钥**。
+        Java 侧把 provider 故障映射为 `category`：`LLM_AUTH_FAILED→auth`、
+        `LLM_CONNECT_TIMEOUT→timeout`、`BASE_URL_BLOCKED→blocked`、
+        `LLM_UNAVAILABLE→unavailable`、其它→`protocol`。
+        即便 provider 失败，本接口仍返回 HTTP `200` + `ok=false`（属于结果而非请求错误）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TestConnectionRequest' }
+      responses:
+        '200':
+          description: 连接测试结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TestConnectionResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/settings/llm-profiles/import/preview:
+    post:
+      tags: [llm-profiles]
+      operationId: previewLlmConfigImport
+      summary: 导入预览（不修改当前配置）
+      description: |
+        `config` 不能为空，否则 `400` + `VALIDATION_ERROR`。`previewId` 有效期 10 分钟。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportPreviewRequest' }
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportPreviewResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/settings/llm-profiles/import/confirm:
+    post:
+      tags: [llm-profiles]
+      operationId: confirmLlmConfigImport
+      summary: 应用导入预览
+      description: |
+        `previewId` 不存在/已过期/已应用 → `409` + `STATE_CONFLICT`；
+        预览中存在校验错误 → `400` + `VALIDATION_ERROR`。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportConfirmRequest' }
+      responses:
+        '200':
+          description: 应用结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ImportConfirmResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/settings/llm-profiles/export:
+    post:
+      tags: [llm-profiles]
+      operationId: exportLlmConfig
+      summary: 脱敏导出 LLM 配置
+      description: |
+        返回 `llm-config.json` 结构（`schemaVersion`/`defaultProfileId`/`profiles`）。
+        `apiKeyRef` 保留，绝不含明文密钥与内部令牌。
+      responses:
+        '200':
+          description: 导出内容
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ExportResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/settings/llm-profiles/default:
+    put:
+      tags: [llm-profiles]
+      operationId: setDefaultLlmProfile
+      summary: 切换默认档案
+      description: |
+        `profileId` 为 `null` 时必须显式传 `disableAi: true`，否则 `400` + `VALIDATION_ERROR`。
+        返回更新后的档案列表。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DefaultProfileRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileList' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/settings/llm-profiles/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    put:
+      tags: [llm-profiles]
+      operationId: updateLlmProfile
+      summary: 保存档案（configRevision+1）
+      description: '失败保留上一有效配置。支持 `Idempotency-Key`。'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpsertRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [llm-profiles]
+      operationId: deleteLlmProfile
+      summary: 删除档案（同时清理凭据绑定）
+      description: '正在使用的默认档案 → `409` + `STATE_CONFLICT`。返回更新后的档案列表。'
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/settings/llm-profiles/{id}/credential:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    post:
+      tags: [llm-profiles]
+      operationId: setLlmProfileCredential
+      summary: 绑定密钥（写 OS 凭据存储）
+      description: '只接受写入，不回读密钥；响应不回显 `apiKey`，只把 `credentialConfigured` 置为 `true`。'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CredentialRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [llm-profiles]
+      operationId: deleteLlmProfileCredential
+      summary: 解绑密钥
+      responses:
+        '200': { $ref: '#/components/responses/OkProfileView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ==================================================================================
+  # §7 AI 能力对外入口
+  # ==================================================================================
+  /api/v1/ai/questions/{id}/explain:
+    post:
+      tags: [ai]
+      operationId: explainQuestion
+      summary: 题目讲解（转调 Python AI 服务）
+      description: |
+        Java 侧组装题干/选项/答案/解析与默认档案凭据后转发给 Python 服务的
+        `POST /api/v1/ai/explain`，并把返回的 `data` 原样透出。
+        题目无当前版本 → `404`；AI 服务不可用 → `503` + `LLM_UNAVAILABLE`；
+        超时 → `504` + `LLM_CONNECT_TIMEOUT`。
+      parameters:
+        - $ref: '#/components/parameters/QuestionId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExplainRequest' }
+      responses:
+        '200':
+          description: '讲解结果（Python 服务 `data` 内容）'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ExplainData' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/LlmUnavailable' }
+        '504': { $ref: '#/components/responses/LlmTimeout' }
+
+
+  # ==================================================================================
+  # §8 系统设置与备份
+  # ==================================================================================
+  /api/v1/system/info:
+    get:
+      tags: [system]
+      operationId: getSystemInfo
+      summary: 系统信息（数据目录、日志目录、备份列表、凭据后端、AI 状态）
+      responses:
+        '200': { $ref: '#/components/responses/OkSystemInfoView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/system/backups:
+    get:
+      tags: [system]
+      operationId: listBackups
+      summary: 备份列表
+      responses:
+        '200':
+          description: 备份列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/BackupView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/system/backup:
+    post:
+      tags: [system]
+      operationId: createBackup
+      summary: 立即备份
+      description: |
+        用 `VACUUM INTO` 生成一致性快照到 `<data-dir>/backups/`。备份未通过完整性校验时
+        立即删除并返回 `500` + `INTERNAL_ERROR`，不留可疑文件。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { $ref: '#/components/responses/OkBackupView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/system/backups/verify:
+    post:
+      tags: [system]
+      operationId: verifyBackup
+      summary: 只读校验指定备份（恢复前二次确认）
+      parameters:
+        - name: fileName
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/IntegrityView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/system/restore:
+    post:
+      tags: [system]
+      operationId: restoreBackup
+      summary: 请求从备份恢复（下次启动执行）
+      description: |
+        校验备份（`integrity_check` + `foreign_key_check` + `schema_version` 存在）后写
+        `restore-request.json`；真正的替换在下次启动、打开连接池之前执行，替换前自动备份当前库。
+        缺 `confirm=true` → `400` + `VALIDATION_ERROR`。支持 `Idempotency-Key`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RestoreRequest' }
+      responses:
+        '200':
+          description: 已登记恢复请求
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RestoreResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/system/integrity-check:
+    post:
+      tags: [system]
+      operationId: runIntegrityCheck
+      summary: 立即执行完整性检查
+      responses:
+        '200':
+          description: 检查结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/IntegrityView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/system/seed-demo:
+    post:
+      tags: [system]
+      operationId: seedDemoData
+      summary: 幂等写入演示题库
+      description: '6 题覆盖 6 种题型 + 1 张已发布试卷；已存在则跳过。支持 `Idempotency-Key`。'
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 写入结果
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SeedDemoResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/system/logs:
+    get:
+      tags: [system]
+      operationId: listLogFiles
+      summary: 日志文件列表（按修改时间倒序）
+      responses:
+        '200':
+          description: 日志文件列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/LogFileView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/system/logs/tail:
+    get:
+      tags: [system]
+      operationId: tailLogFile
+      summary: 读取日志尾部（默认 500 行，已脱敏）
+      description: |
+        `file` 必须是日志目录内的普通文件，且路径规范化后仍位于日志目录内，
+        否则 `404` + `RESOURCE_NOT_FOUND`（防目录穿越）。返回行经过 `LogRedactor` 脱敏。
+      parameters:
+        - name: file
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 日志尾部内容
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/LogTailView' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/system/files:
+    get:
+      tags: [system]
+      operationId: getFileConsistencyReport
+      summary: 资料文件一致性报告
+      description: |
+        只读巡检（契约 §11.5）：`orphanFiles` 为磁盘上有文件但 `imported_file` 无记录、
+        且已超过保留窗口（`retentionHours`，24 小时）的条目（按 `relativePath` 升序）；
+        `missingFiles` 为数据库有记录但磁盘文件缺失的资料；`tempFiles` 为 temp 目录下的文件数。
+        路径一律是相对数据目录的相对路径（正斜杠），不含用户目录绝对路径。
+      responses:
+        '200': { $ref: '#/components/responses/OkFileConsistencyReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/system/files/cleanup:
+    post:
+      tags: [system]
+      operationId: cleanupFiles
+      summary: 资料文件一致性补偿（默认 dry-run）
+      description: |
+        请求体可整体省略，也可为 `{ "dryRun": boolean }`；`dryRun` 缺省 **true**（只报告不修改）。
+        仅显式传 `false` 才执行破坏性动作：删除超过保留窗口的孤儿文件与临时文件，并把
+        「有记录但文件缺失」的资料标记为 `failed`（`errorCode=DOCUMENT_PARSE_FAILED`、
+        消息含相对路径，保留记录、不自动发布部分结果）。
+        `markedFailed` 在 dry-run 下也统计**将被**标记的资料数（实现里该计数不受 dryRun 影响）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FileCleanupRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkFileCleanupResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ==================================================================================
+  # §9 异步任务
+  # ==================================================================================
+  /api/v1/tasks:
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: 任务分页列表
+      description: '过滤参数白名单 `page,size,status,taskType`。'
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/TaskStatus' }
+        - name: taskType
+          in: query
+          description: 'v1 只实现 `ai_grade`'
+          schema: { type: string }
+      responses:
+        '200':
+          description: 分页任务列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TaskViewPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/tasks/{id}:
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: 任务详情
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200': { $ref: '#/components/responses/OkTaskView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/tasks/{id}/retry:
+    post:
+      tags: [tasks]
+      operationId: retryTask
+      summary: 重试任务（failed/cancelled → queued）
+      description: '重置 `attemptCount=0`、`nextRunAt=now`。其它状态 → `409` + `STATE_CONFLICT`。'
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200': { $ref: '#/components/responses/OkTaskView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  /api/v1/tasks/{id}/cancel:
+    post:
+      tags: [tasks]
+      operationId: cancelTask
+      summary: 取消任务（queued/running/retry_wait → cancelled）
+      description: '已结束（`succeeded`/`failed`）→ `409` + `STATE_CONFLICT`。'
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200': { $ref: '#/components/responses/OkTaskView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+
+  # ==================================================================================
+  # §11 资料库与本地检索（阶段 6）
+  # ==================================================================================
+  /api/v1/documents:
+    get:
+      tags: [documents]
+      operationId: listDocuments
+      summary: 资料分页列表
+      description: |
+        过滤参数 `page,size,q,status,sha256`（`DocumentController.list` 全部可选）。
+        `page` 缺省 1、`size` 缺省 20 且必须落在 1-100（否则 `400` + `VALIDATION_ERROR`）。
+        `q` 匹配标题（模糊）；`status` 白名单 `imported`/`indexed`/`failed`（其它值 → `400`）；
+        `sha256` 按文件哈希精确过滤，用于重复导入后取回已存在资料供用户选择「复用 / 新建」。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/SearchQ'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DocumentStatus' }
+        - name: sha256
+          in: query
+          description: '文件 SHA-256（64 位小写十六进制），按内容过滤'
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/OkDocumentSummaryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/documents/import:
+    post:
+      tags: [documents]
+      operationId: importDocument
+      summary: 导入文本资料
+      description: |
+        请求体 `{ "sourcePath", "sha256", "title"?, "onDuplicate"? }`（`DocumentDtos.ImportRequest`）。
+        落盘顺序固定（契约 §11.5）：先写临时文件 → **服务端重算 SHA-256** 与入参比对（防 TOCTOU，
+        不一致 → `400` + `VALIDATION_ERROR`）→ 校验后缀白名单与体积 → 原子移动到正式目录 →
+        短事务登记 → 分块 → 建索引。返回值与 `GET /api/v1/documents/{id}` 同形。
+
+        - `sha256` 可选；省略则不比对，由服务端计算结果作为事实。
+        - 后缀不在白名单（仅 `.txt`/`.md`/`.markdown`）→ `400` + `DOCUMENT_FORMAT_UNSUPPORTED`；
+          超过 8 MiB → `400` + `DOCUMENT_TOO_LARGE`；文件为空或解码/解析失败 → `400` + `DOCUMENT_PARSE_FAILED`。
+        - `onDuplicate` ∈ `reject`（缺省）| `reuse` | `new`（其它值 → `400`）。同 `sha256` 已有资料时：
+          `reject` → `409` + `STATE_CONFLICT`（`error.details` 为 `[{field:"sourcePath", message}]`）；
+          `reuse` → 直接返回已有资料；`new` → 复用同一份磁盘文件、只新增一条资料记录。
+        - 落盘登记成功、但**解析**阶段解码失败（既非 UTF-8 也非 GB18030）或解析不出文本时**不抛错**：
+          落一条 `status=failed` 的资料记录，`errorCode` 为 `DOCUMENT_PARSE_FAILED`，原文文件保留
+          （开发文档 §505）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DocumentImportRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OkDocumentSummary' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: '同 `sha256` 已导入且 `onDuplicate=reject`（`STATE_CONFLICT`）'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/v1/documents/reindex:
+    post:
+      tags: [documents]
+      operationId: rebuildDocumentIndex
+      summary: 重建索引（版本化）
+      description: |
+        建立新 `indexVersion` → 全量分块重建 → 完整性自检 → 切换 `activeVersion`；
+        任一步失败即丢弃新版本分块与索引行、保留旧版本继续对外服务，并返回
+        `500` + `DOCUMENT_INDEX_FAILED`（契约 §11.4 第 4 条）。失败明细在 `error.message` 里，
+        成功时 `failures` 为**恒为空数组**（实现只在失败分支里累积明细并抛错）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200': { $ref: '#/components/responses/OkIndexRebuildResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500':
+          description: '索引重建失败，旧索引版本保留（`DOCUMENT_INDEX_FAILED`，`retryable=true`）'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiResponse' }
+
+  /api/v1/documents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      operationId: getDocument
+      summary: 资料详情
+      description: '不存在 → `404` + `RESOURCE_NOT_FOUND`。'
+      responses:
+        '200': { $ref: '#/components/responses/OkDocumentSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [documents]
+      operationId: deleteDocument
+      summary: 删除资料及其分块与索引行
+      description: |
+        先删 FTS 行（依赖分块 id）再删 `document`（分块靠外键级联）；
+        仅当同一 `sha256` 已无其它资料引用时才删除磁盘文件并清理 `imported_file` 记录，
+        因此 `fileRemoved=false` 表示文件仍被其它资料复用。不存在 → `404` + `RESOURCE_NOT_FOUND`。
+      responses:
+        '200': { $ref: '#/components/responses/OkDocumentDeleteResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/documents/{id}/chunks:
+    get:
+      tags: [documents]
+      operationId: listDocumentChunks
+      summary: 分块预览（供校对与引用核对）
+      description: |
+        只读取该资料 `indexVersion` 对应的分块；资料无 `indexVersion` 时用当前 `activeVersion`。
+        分页参数与列表一致（`page` 缺省 1、`size` 缺省 20、1-100）。不存在 → `404` + `RESOURCE_NOT_FOUND`。
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200': { $ref: '#/components/responses/OkChunkViewPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/search:
+    get:
+      tags: [search]
+      operationId: searchDocuments
+      summary: 本地检索（FTS5，不可用时降级关键词）
+      description: |
+        `q` 必填，去空白后不能为空、最多 200 个码点（否则 `400` + `VALIDATION_ERROR`）。
+        `limit` 缺省 10、范围 1-50，越界 → `400` + `VALIDATION_ERROR`。
+        `documentId` 可选，用于把检索限制在单份资料内。
+
+        响应 `mode` 如实反映**本次实际生效**的实现（`fts5` | `keyword`，契约 §11.4）：
+        FTS5 可用且查询每个词都不短于 3 字符（trigram 下限）时走 FTS5，命中为空、
+        查询过短或 FTS5 表缺失/语句异常时降级为 `LIKE` 关键词检索并返回 `keyword`，
+        降级不会把 500 抛给用户。
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: '检索关键词（1-200 字符）；去空白后为空或超长 → `400` + `VALIDATION_ERROR`'
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: limit
+          in: query
+          description: '返回条数上限，缺省 10'
+          schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+        - name: documentId
+          in: query
+          description: '限定单份资料（`doc_` 前缀），省略则检索全部资料'
+          schema: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/OkSearchResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/search/index:
+    get:
+      tags: [search]
+      operationId: getSearchIndexState
+      summary: 索引状态（当前活跃版本与分块统计）
+      description: |
+        `updatedAt` 在 `index_state` 行缺失时用当前时间；`fts5Available` 为 FTS5 + trigram 能力探测结果；
+        `documentCount`/`chunkCount` 是全体资料数与 `activeVersion` 的分块数。
+      responses:
+        '200': { $ref: '#/components/responses/OkIndexState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+# ======================================================================================
+# components
+# ======================================================================================
+components:
+
+  securitySchemes:
+    sessionToken:
+      type: apiKey
+      in: header
+      name: X-Session-Token
+      description: |
+        Java 服务启动时随机生成的 256bit hex 会话令牌（不落库、退出即失效），
+        从 `<data-dir>/runtime/java-endpoint.json` 的 `sessionToken` 字段读取。
+        除 `GET /health` 外所有 `/api/**` 请求都必须携带。
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 页码，从 1 开始
+      schema: { type: integer, minimum: 1, default: 1 }
+    Size:
+      name: size
+      in: query
+      description: 每页条数
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    SearchQ:
+      name: q
+      in: query
+      description: 关键词（题目匹配标题与题干；试卷匹配标题与说明）
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: |
+        幂等键（1-128 字符）。同键同载荷重放首次结果（响应头 `Idempotent-Replay: true`），
+        同键不同载荷 → `409` + `IDEMPOTENCY_CONFLICT`。
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    QuestionId:
+      name: id
+      in: path
+      required: true
+      description: '题目 id（`q_` 前缀）'
+      schema: { type: string, pattern: '^q_[0-9A-Z]{26}$' }
+    PaperId:
+      name: id
+      in: path
+      required: true
+      description: '试卷 id（`p_` 前缀）'
+      schema: { type: string, pattern: '^p_[0-9A-Z]{26}$' }
+    AttemptId:
+      name: id
+      in: path
+      required: true
+      description: '作答 id（`at_` 前缀）'
+      schema: { type: string, pattern: '^at_[0-9A-Z]{26}$' }
+    SnapshotQuestionId:
+      name: snapshotQuestionId
+      in: path
+      required: true
+      description: '快照题目 id（`sq_` 前缀）'
+      schema: { type: string, pattern: '^sq_[0-9A-Z]{26}$' }
+    WrongQuestionId:
+      name: id
+      in: path
+      required: true
+      description: '错题 id（`wq_` 前缀）'
+      schema: { type: string, pattern: '^wq_[0-9A-Z]{26}$' }
+    ProfileId:
+      name: id
+      in: path
+      required: true
+      description: LLM 档案 id
+      schema: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }
+    TaskId:
+      name: id
+      in: path
+      required: true
+      description: '异步任务 id（`task_` 前缀）'
+      schema: { type: string, pattern: '^task_[0-9A-Z]{26}$' }
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      description: '资料 id（`doc_` 前缀，见 `common/Ids`）'
+      schema: { type: string, pattern: '^doc_[0-9A-Z]{26}$' }
+
+  responses:
+    Unauthorized:
+      description: '会话令牌缺失或失效（`UNAUTHORIZED`）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+          example:
+            success: false
+            data: null
+            error:
+              code: UNAUTHORIZED
+              message: 会话令牌缺失或已失效，请重启桌面应用
+              details: []
+              retryable: false
+            requestId: req_01hq8z9k3m4n5p6q7r8s9t0uvw
+            timestamp: '2026-10-10T14:00:00Z'
+    ValidationError:
+      description: '字段校验失败（`VALIDATION_ERROR`，`details` 给出字段级明细）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    NotFound:
+      description: '资源不存在（`RESOURCE_NOT_FOUND`）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    StateConflict:
+      description: '状态不允许当前操作（`STATE_CONFLICT`）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    IdempotencyConflict:
+      description: '同一幂等键不同载荷（`IDEMPOTENCY_CONFLICT`）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    LlmUnavailable:
+      description: 'AI 服务或模型不可用（`LLM_UNAVAILABLE`，重试可恢复）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    LlmTimeout:
+      description: '连接模型服务超时（`LLM_CONNECT_TIMEOUT`）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+    InternalError:
+      description: '未预期错误（`INTERNAL_ERROR`，响应只带 requestId 便于诊断）'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+
+    OkMetaView:
+      description: 元信息
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/MetaView' }
+    OkDashboardView:
+      description: 仪表盘
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/DashboardView' }
+    OkQuestionView:
+      description: 题目详情
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/QuestionView' }
+    CreatedQuestionView:
+      description: '已创建题目（`201`）'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/QuestionView' }
+    OkPaperView:
+      description: 试卷详情
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PaperView' }
+    CreatedPaperView:
+      description: '已创建试卷（`201`）'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PaperView' }
+    OkPaperSnapshot:
+      description: 试卷快照
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PaperSnapshotView' }
+    OkAttemptSheet:
+      description: 答题卡
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AttemptSheet' }
+    CreatedAttemptSheet:
+      description: '已创建作答（`201`）'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AttemptSheet' }
+    OkAnswerView:
+      description: 单题作答
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AnswerView' }
+    OkAttemptResult:
+      description: 作答结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AttemptResult' }
+    OkWrongQuestionDetail:
+      description: 错题详情
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/WrongQuestionDetail' }
+    OkProfileList:
+      description: 档案列表
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ProfileListResponse' }
+    OkProfileView:
+      description: 单个档案
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ProfileView' }
+    CreatedProfileView:
+      description: '已创建档案（`201`）'
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ProfileView' }
+    OkSystemInfoView:
+      description: 系统信息
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SystemInfoView' }
+    OkBackupView:
+      description: 备份信息
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BackupView' }
+    OkTaskView:
+      description: 任务详情
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/TaskView' }
+    OkDocumentSummary:
+      description: 单份资料
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/DocumentSummary' }
+    OkDocumentSummaryPage:
+      description: 分页资料列表
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/DocumentSummaryPage' }
+    OkChunkViewPage:
+      description: 分页分块列表
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ChunkViewPage' }
+    OkDocumentDeleteResponse:
+      description: 删除结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/DocumentDeleteResponse' }
+    OkIndexRebuildResponse:
+      description: 索引重建结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/IndexRebuildResponse' }
+    OkSearchResponse:
+      description: 检索结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/SearchResponse' }
+    OkIndexState:
+      description: 索引状态
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/IndexState' }
+    OkFileConsistencyReport:
+      description: 文件一致性报告
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/FileConsistencyReport' }
+    OkFileCleanupResponse:
+      description: 文件一致性补偿结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponse'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/FileCleanupResponse' }
+
+  schemas:
+
+    # ---------------------------------------------------------------- 通用包络与错误
+    ApiResponse:
+      type: object
+      description: |
+        统一响应包络（`common/ApiResponse.java`）。成功时 `error` 为 `null`，失败时 `data` 为 `null`。
+        Java 侧 `default-property-inclusion: always`，所有字段都会出现。
+      required: [success, data, error, requestId, timestamp]
+      properties:
+        success: { type: boolean }
+        data:
+          description: '成功时的业务数据；失败时为 `null`'
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/ApiError'
+            - type: 'null'
+        requestId:
+          type: string
+          description: '请求编号，形如 `req_` + 26 位小写 Crockford Base32 ULID'
+          examples: [req_01hq8z9k3m4n5p6q7r8s9t0uvw]
+        timestamp:
+          type: string
+          description: UTC ISO-8601（秒精度）
+          examples: ['2026-10-10T14:00:00Z']
+
+    ApiError:
+      type: object
+      description: '失败详情（`ApiResponse.ApiError`）。`message` 面向用户，不含密钥与供应商原始错误全文。'
+      required: [code, message, details, retryable]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+        details:
+          type: array
+          items: { $ref: '#/components/schemas/FieldViolation' }
+        retryable:
+          type: boolean
+          description: '与 `ErrorCode` 的 retryable 属性一致'
+
+    FieldViolation:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: '字段路径，如 `stem`、`answer.value`、`questions.score`'
+        message: { type: string }
+
+    ErrorCode:
+      type: string
+      description: '冻结错误码（`common/ErrorCode.java`）。新增码必须先改契约文档。'
+      enum:
+        - VALIDATION_ERROR
+        - UNAUTHORIZED
+        - ORIGIN_REJECTED
+        - RESOURCE_NOT_FOUND
+        - STATE_CONFLICT
+        - VERSION_CONFLICT
+        - IDEMPOTENCY_CONFLICT
+        - DB_BUSY
+        - DB_MIGRATION_FAILED
+        - CONFIG_JSON_INVALID
+        - CONFIG_SCHEMA_UNSUPPORTED
+        - BASE_URL_BLOCKED
+        - CREDENTIAL_MISSING
+        - LLM_AUTH_FAILED
+        - LLM_CONNECT_TIMEOUT
+        - LLM_UNAVAILABLE
+        - TASK_RETRY_EXHAUSTED
+        - DOCUMENT_FORMAT_UNSUPPORTED
+        - DOCUMENT_TOO_LARGE
+        - DOCUMENT_PARSE_FAILED
+        - DOCUMENT_INDEX_FAILED
+        - INTERNAL_ERROR
+
+    HealthResponse:
+      type: object
+      description: '`GET /health` 的裸对象（不走包络），由 `HealthController` 组装。'
+      required: [status, service, version, schemaVersion, uptimeSeconds]
+      properties:
+        status: { type: string, const: UP }
+        service: { type: string, const: java-api }
+        version: { type: string, const: 1.0.0 }
+        schemaVersion: { type: integer, description: 数据库 schema 版本 }
+        uptimeSeconds: { type: integer, description: JVM 运行时长（秒） }
+
+    PageResult:
+      type: object
+      description: '分页结果（`common/PageResult.java`）。'
+      required: [items, page, size, total, totalPages]
+      properties:
+        items: { type: array, items: {} }
+        page: { type: integer, minimum: 1 }
+        size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+
+    # ---------------------------------------------------------------- 枚举
+    QuestionType:
+      type: string
+      enum: [single_choice, multiple_choice, true_false, fill_blank, short_answer, essay]
+    QuestionStatus:
+      type: string
+      enum: [draft, published, archived]
+    PaperStatus:
+      type: string
+      enum: [draft, published, archived]
+    AttemptMode:
+      type: string
+      enum: [paper, wrong_practice]
+    AttemptStatus:
+      type: string
+      enum: [in_progress, submitted, graded, abandoned]
+    GradingMethod:
+      type: string
+      enum: [exact, normalized, partial_credit, ai_rubric, manual, ungraded]
+    GradingStatus:
+      type: string
+      enum: [graded, pending_review, failed]
+    WrongStatus:
+      type: string
+      enum: [active, reviewing, mastered, archived]
+    TaskStatus:
+      type: string
+      enum: [queued, running, succeeded, retry_wait, failed, cancelled]
+    LlmProvider:
+      type: string
+      description: 'v1 实现 `openai-compatible` 与 `ollama`；其余为预留（数据库 CHECK 允许存储）'
+      enum: [openai-compatible, ollama, anthropic, azure-openai]
+    QuestionSort:
+      type: string
+      description: '缺省 `-updatedAt`'
+      enum: [updatedAt, '-updatedAt', createdAt, '-createdAt']
+    WrongQuestionSort:
+      type: string
+      description: '缺省 `-updatedAt`'
+      enum: ['-updatedAt', updatedAt, nextReviewAt, lastWrongAt, wrongCount]
+    TestConnectionCategory:
+      type: string
+      enum: [ok, dns, tls, auth, model_not_found, quota, timeout, protocol, blocked, unavailable]
+
+    # ---------------------------------------------------------------- 题库
+    OptionView:
+      type: object
+      required: [key, content, correct]
+      properties:
+        key: { type: string, maxLength: 8 }
+        content: { type: string }
+        correct: { type: boolean }
+
+    VersionBrief:
+      type: object
+      required: [id, versionNo, createdAt, changeNote]
+      properties:
+        id: { type: string }
+        versionNo: { type: integer, minimum: 1 }
+        createdAt: { type: string }
+        changeNote: { type: [string, 'null'] }
+
+    QuestionSummary:
+      type: object
+      required: [id, title, questionType, status, difficulty, currentVersionNo, knowledgeTags, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string, maxLength: 200 }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        status: { $ref: '#/components/schemas/QuestionStatus' }
+        difficulty: { type: integer, minimum: 1, maximum: 5 }
+        currentVersionNo: { type: integer, minimum: 1 }
+        knowledgeTags:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 32 }
+        updatedAt: { type: string }
+
+    QuestionVersionView:
+      type: object
+      description: '题目版本内容。`answer`/`rubric` 是自由 JSON（按题型不同形状，见契约 §2.1）。'
+      required: [id, versionNo, stem, options, answer, explanation, rubric, knowledgeTags, changeNote, createdAt]
+      properties:
+        id: { type: string }
+        versionNo: { type: integer, minimum: 1 }
+        stem: { type: string, maxLength: 5000 }
+        options:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/OptionView' }
+        answer:
+          description: '标准答案 JSON（`Answer` 结构，按题型不同）'
+        explanation: { type: [string, 'null'], maxLength: 5000 }
+        rubric:
+          description: '评分细则 JSON（`{ criteria: [{ id, desc, weight }], maxScore }`）；无则 `null`'
+        knowledgeTags:
+          type: array
+          items: { type: string }
+        changeNote: { type: [string, 'null'], maxLength: 500 }
+        createdAt: { type: string }
+
+    QuestionView:
+      type: object
+      required: [id, title, questionType, status, difficulty, currentVersion, versions, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        status: { $ref: '#/components/schemas/QuestionStatus' }
+        difficulty: { type: integer, minimum: 1, maximum: 5 }
+        currentVersion:
+          oneOf:
+            - $ref: '#/components/schemas/QuestionVersionView'
+            - type: 'null'
+        versions:
+          type: array
+          items: { $ref: '#/components/schemas/VersionBrief' }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+
+    QuestionSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/QuestionSummary' }
+
+    QuestionSaveRequest:
+      type: object
+      description: '建题/改题请求（`QuestionDtos.SaveRequest`）。'
+      required: [title, questionType, stem, answer]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        difficulty: { type: integer, minimum: 1, maximum: 5, description: 缺省 2 }
+        stem: { type: string, minLength: 1, maxLength: 5000 }
+        options:
+          type: [array, 'null']
+          description: '选择题必须 2-10 个且 `key` 唯一；`true_false` 不传；选项内容同样作为不可信文本处理'
+          items: { $ref: '#/components/schemas/OptionView' }
+        answer:
+          description: |
+            标准答案 JSON。按题型：
+            `single_choice` → `{type, value:"C"}`；
+            `multiple_choice` → `{type, value:["A","C"], partialCredit?}`；
+            `true_false` → `{type, value:true}`；
+            `fill_blank` → `{type, blanks:[{index, accepted:[...], normalize:{...}}]}`；
+            `short_answer`/`essay` → `{type, referenceAnswer, rubric?}`
+        explanation: { type: [string, 'null'], maxLength: 5000 }
+        rubric:
+          description: '评分细则 JSON；与 `answer.rubric` 二选一，简答/论述题必须提供其一'
+        knowledgeTags:
+          type: [array, 'null']
+          maxItems: 20
+          items: { type: string, maxLength: 32 }
+        changeNote: { type: [string, 'null'], maxLength: 500 }
+        expectedVersionNo:
+          type: [integer, 'null']
+          description: '乐观锁期望版本号；不匹配 → `VERSION_CONFLICT`'
+
+    # ---------------------------------------------------------------- 试卷
+    PaperSummary:
+      type: object
+      required: [id, title, status, questionCount, totalScore, publishedAt, createdAt, updatedAt, latestSnapshotId]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { $ref: '#/components/schemas/PaperStatus' }
+        questionCount: { type: integer }
+        totalScore: { type: number, format: double }
+        publishedAt: { type: [string, 'null'] }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+        latestSnapshotId: { type: [string, 'null'] }
+
+    PaperQuestionView:
+      type: object
+      required: [id, questionId, questionVersionId, orderNo, score, title, questionType, versionNo]
+      properties:
+        id: { type: string }
+        questionId: { type: string }
+        questionVersionId: { type: string }
+        orderNo: { type: integer, minimum: 1 }
+        score: { type: number, format: double }
+        title: { type: string }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        versionNo: { type: integer }
+
+    PaperView:
+      type: object
+      required: [id, title, description, status, questionCount, totalScore, publishedAt, createdAt, updatedAt, latestSnapshotId, questions]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: '{ type: [string, ''null''] }'
+        status: { $ref: '#/components/schemas/PaperStatus' }
+        questionCount: { type: integer }
+        totalScore: { type: number, format: double }
+        publishedAt: { type: [string, 'null'] }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+        latestSnapshotId: { type: [string, 'null'] }
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/PaperQuestionView' }
+
+    PaperSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/PaperSummary' }
+
+    QuestionRef:
+      type: object
+      required: [questionId]
+      properties:
+        questionId: { type: string, description: 题目 id }
+        questionVersionId: { type: [string, 'null'], description: 省略则取该题当前版本 }
+        score:
+          type: [number, 'null']
+          format: double
+          description: '省略默认 5 分；范围 (0, 100]'
+
+    PaperSaveRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: '{ type: [string, ''null''], maxLength: 1000 }'
+        questions:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/QuestionRef' }
+
+    SnapshotQuestionView:
+      type: object
+      required: [id, orderNo, score, questionId, questionVersionId, questionType, stem, options, answer, explanation, rubric, knowledgeTags]
+      properties:
+        id: { type: string }
+        orderNo: { type: integer, minimum: 1 }
+        score: { type: number, format: double }
+        questionId: { type: string }
+        questionVersionId: { type: string }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/OptionView' }
+        answer: { description: 快照里的标准答案 JSON }
+        explanation: { type: [string, 'null'] }
+        rubric: { description: 评分细则 JSON }
+        knowledgeTags:
+          type: array
+          items: { type: string }
+
+    PaperSnapshotView:
+      type: object
+      description: '不可变发布快照（`PaperDtos.PaperSnapshotView`）。'
+      required: [id, paperId, versionNo, title, description, questionCount, totalScore, publishedAt, questions]
+      properties:
+        id: { type: string }
+        paperId:
+          type: [string, 'null']
+          description: '错题练习快照的 `paperId` 为 `null`'
+        versionNo: { type: integer, minimum: 1 }
+        title: { type: string }
+        description: '{ type: [string, ''null''] }'
+        questionCount: { type: integer, minimum: 1 }
+        totalScore: { type: number, format: double }
+        publishedAt: { type: string }
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/SnapshotQuestionView' }
+
+    # ---------------------------------------------------------------- 作答与判分
+    AttemptStartRequest:
+      type: object
+      description: '开始作答请求（`AttemptDtos.StartRequest`）。整体可省略。'
+      properties:
+        paperId:
+          type: [string, 'null']
+          description: '`mode=paper` 时必填（已发布试卷）'
+        mode:
+          oneOf: '[{ $ref: '#/components/schemas/AttemptMode' }, { type: 'null' }]'
+          description: '缺省 `paper`'
+        wrongQuestionIds:
+          type: [array, 'null']
+          items: { type: string }
+        limit:
+          type: [integer, 'null']
+          description: '`wrong_practice` 时取到期错题条数上限'
+
+    AttemptSummary:
+      type: object
+      required: [id, paperId, paperSnapshotId, paperTitle, mode, status, totalScore, maxScore, questionCount, startedAt, submittedAt, gradedAt]
+      properties:
+        id: { type: string }
+        paperId: { type: [string, 'null'] }
+        paperSnapshotId: { type: [string, 'null'] }
+        paperTitle: { type: string }
+        mode: { $ref: '#/components/schemas/AttemptMode' }
+        status: { $ref: '#/components/schemas/AttemptStatus' }
+        totalScore: { type: [number, 'null'], format: double }
+        maxScore: { type: [number, 'null'], format: double }
+        questionCount: { type: integer }
+        startedAt: { type: string }
+        submittedAt: { type: [string, 'null'] }
+        gradedAt: { type: [string, 'null'] }
+
+    AttemptSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AttemptSummary' }
+
+    SheetQuestion:
+      type: object
+      description: '答题卡题目。未提交（`in_progress`）时 `answer`/`explanation` 为 `null`。'
+      required: [snapshotQuestionId, orderNo, score, questionType, stem, options, knowledgeTags, answer, explanation]
+      properties:
+        snapshotQuestionId: { type: string }
+        orderNo: { type: integer, minimum: 1 }
+        score: { type: number, format: double, description: 本题满分 }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/OptionView' }
+        knowledgeTags:
+          type: array
+          items: { type: string }
+        answer:
+          description: '标准答案；未提交时为 `null`'
+        explanation:
+          type: [string, 'null']
+          description: '解析；未提交时为 `null`'
+
+    AnswerView:
+      type: object
+      description: '单题作答（`AttemptDtos.AnswerView`）。'
+      required: [snapshotQuestionId, questionId, questionVersionId, answer, score, maxScore, gradingMethod, gradingStatus, gradingDetail, savedAt]
+      properties:
+        snapshotQuestionId: { type: string }
+        questionId: { type: string }
+        questionVersionId: { type: string }
+        answer: { description: 用户作答 JSON }
+        score:
+          type: [number, 'null']
+          format: double
+          description: '主观题待复核时为 `null`'
+        maxScore: { type: number, format: double }
+        gradingMethod: { $ref: '#/components/schemas/GradingMethod' }
+        gradingStatus: { $ref: '#/components/schemas/GradingStatus' }
+        gradingDetail:
+          description: |
+            判分明细 JSON。确定性判分含 `ruleVersion`（v1 = `"1.0"`）；
+            AI 建议分写入 `suggestedScore` + `criteria` + `needsReview: true`；
+            人工评分含 `manualScore`、`note`、`gradedBy`。
+        savedAt: { type: string }
+
+    AttemptSheet:
+      type: object
+      required: [id, paperId, paperSnapshotId, paperTitle, mode, status, totalScore, maxScore, startedAt, submittedAt, gradedAt, questions, answers]
+      properties:
+        id: { type: string }
+        paperId: { type: [string, 'null'] }
+        paperSnapshotId: { type: [string, 'null'] }
+        paperTitle: { type: string }
+        mode: { $ref: '#/components/schemas/AttemptMode' }
+        status: { $ref: '#/components/schemas/AttemptStatus' }
+        totalScore: { type: [number, 'null'], format: double }
+        maxScore: { type: [number, 'null'], format: double }
+        startedAt: { type: string }
+        submittedAt: { type: [string, 'null'] }
+        gradedAt: { type: [string, 'null'] }
+        questions:
+          type: array
+          items: { $ref: '#/components/schemas/SheetQuestion' }
+        answers:
+          type: array
+          items: { $ref: '#/components/schemas/AnswerView' }
+
+    ResultItem:
+      type: object
+      required: [snapshotQuestionId, orderNo, questionType, stem, options, userAnswer, correctAnswer, explanation, score, maxScore, correct, gradingMethod, gradingStatus, gradingDetail, knowledgeTags]
+      properties:
+        snapshotQuestionId: { type: string }
+        orderNo: { type: integer, minimum: 1 }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        stem: { type: string }
+        options:
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/OptionView' }
+        userAnswer:
+          description: '用户作答 JSON；未作答为 `null`'
+        correctAnswer: { description: 标准答案 JSON }
+        explanation: { type: [string, 'null'] }
+        score: { type: [number, 'null'], format: double }
+        maxScore: { type: number, format: double }
+        correct: { type: boolean }
+        gradingMethod: { $ref: '#/components/schemas/GradingMethod' }
+        gradingStatus: { $ref: '#/components/schemas/GradingStatus' }
+        gradingDetail: { description: 判分明细 JSON }
+        knowledgeTags:
+          type: array
+          items: { type: string }
+
+    AttemptResult:
+      type: object
+      required: [attempt, items, correctCount, wrongCount, unansweredCount, pendingReviewCount]
+      properties:
+        attempt: { $ref: '#/components/schemas/AttemptSummary' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ResultItem' }
+        correctCount: { type: integer }
+        wrongCount: { type: integer }
+        unansweredCount: { type: integer }
+        pendingReviewCount: { type: integer, description: 待人工复核的主观题数量 }
+
+    SaveAnswerRequest:
+      type: object
+      required: [answer]
+      properties:
+        answer:
+          description: '作答 JSON（按题型不同形状，与题目 `answer` 同构）'
+
+    ManualGradeRequest:
+      type: object
+      required: [score]
+      properties:
+        score:
+          type: number
+          format: double
+          description: '必须在 `[0, maxScore]`'
+        note: { type: [string, 'null'], description: 复核备注 }
+
+    AiGradeResponse:
+      type: object
+      required: [taskIds, pendingCount]
+      properties:
+        taskIds:
+          type: array
+          items: { type: string }
+        pendingCount: { type: integer, description: 排队的主观题数量 }
+
+    # ---------------------------------------------------------------- 错题
+    WrongQuestionView:
+      type: object
+      description: '错题视图（`WrongDtos.WrongQuestionView`）。`currentVersionNo != wrongVersionNo` 时 UI 必须提示题目已改义。'
+      required: [id, questionId, questionVersionId, questionType, title, stem, status, wrongCount, correctStreak, lastWrongAt, nextReviewAt, lastScore, maxScore, knowledgeTags, currentVersionNo, wrongVersionNo, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        questionId: { type: string }
+        questionVersionId: { type: string }
+        questionType: { $ref: '#/components/schemas/QuestionType' }
+        title: { type: string }
+        stem: { type: string }
+        status: { $ref: '#/components/schemas/WrongStatus' }
+        wrongCount: { type: integer, minimum: 1 }
+        correctStreak: { type: integer, minimum: 0 }
+        lastWrongAt: { type: string }
+        nextReviewAt: { type: [string, 'null'] }
+        lastScore: { type: [number, 'null'], format: double }
+        maxScore: { type: [number, 'null'], format: double }
+        knowledgeTags:
+          type: array
+          items: { type: string }
+        currentVersionNo: { type: integer }
+        wrongVersionNo: { type: integer }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+
+    WrongQuestionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/WrongQuestionView' }
+
+    ReviewRecord:
+      type: object
+      required: [id, result, note, intervalDaysBefore, intervalDaysAfter, nextReviewAt, durationSeconds, reviewedAt]
+      properties:
+        id: { type: string }
+        result: { type: string, enum: [correct, wrong] }
+        note: { type: [string, 'null'] }
+        intervalDaysBefore: { type: [integer, 'null'] }
+        intervalDaysAfter: { type: [integer, 'null'] }
+        nextReviewAt: { type: [string, 'null'] }
+        durationSeconds: { type: [integer, 'null'] }
+        reviewedAt: { type: string }
+
+    WrongQuestionDetail:
+      type: object
+      required: [question, reviews]
+      properties:
+        question: { $ref: '#/components/schemas/WrongQuestionView' }
+        reviews:
+          type: array
+          description: 最近 20 条复习记录，按时间倒序
+          items: { $ref: '#/components/schemas/ReviewRecord' }
+
+    WrongReviewRequest:
+      type: object
+      required: [result]
+      properties:
+        result: { type: string, enum: [correct, wrong] }
+        note: { type: [string, 'null'] }
+        durationSeconds: { type: [integer, 'null'] }
+        attemptAnswerId:
+          type: [string, 'null']
+          description: '关联的作答记录 id（`aa_` 前缀）'
+
+    PracticeRequest:
+      type: object
+      properties:
+        wrongQuestionIds:
+          type: [array, 'null']
+          items: { type: string }
+        limit: { type: [integer, 'null'], description: 缺省取全部到期错题 }
+
+    WrongStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, reviewing, mastered, archived] }
+
+    # ---------------------------------------------------------------- LLM 配置与凭据
+    ProfileView:
+      type: object
+      description: '档案视图（`LlmDtos.ProfileView`）。**绝不含明文密钥**。'
+      required: [id, name, provider, baseUrl, model, apiKeyRef, timeoutSeconds, connectTimeoutSeconds, allowLocalNetwork, parameters, credentialConfigured, isDefault, updatedAt]
+      properties:
+        id: { type: string, maxLength: 64 }
+        name: { type: string, maxLength: 64 }
+        provider: { $ref: '#/components/schemas/LlmProvider' }
+        baseUrl: { type: string, maxLength: 512, description: 无尾部斜杠 }
+        model: { type: string, maxLength: 128 }
+        apiKeyRef:
+          type: [string, 'null']
+          description: '形如 `credential://llm/<profileId>`；永不是明文密钥'
+        timeoutSeconds: { type: integer, minimum: 1, maximum: 900, default: 60 }
+        connectTimeoutSeconds: { type: integer, minimum: 1, maximum: 120, default: 5 }
+        allowLocalNetwork: { type: boolean, default: false }
+        parameters: { type: object, additionalProperties: true }
+        credentialConfigured: { type: boolean }
+        isDefault:
+          type: boolean
+          description: 'Java 记录组件名为 `isDefault`，JSON 字段同为 `isDefault`'
+        updatedAt: { type: string }
+
+    ProfileListResponse:
+      type: object
+      required: [profiles, defaultProfileId, configRevision, credentialBackend]
+      properties:
+        profiles:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ProfileView' }
+        defaultProfileId: { type: [string, 'null'] }
+        configRevision: { type: integer }
+        credentialBackend:
+          type: string
+          description: '如 `windows-credential-manager`、`file`'
+
+    ProfileUpsertRequest:
+      type: object
+      required: [name, provider, baseUrl, model]
+      properties:
+        id:
+          type: [string, 'null']
+          maxLength: 64
+          pattern: '^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          description: '新建时可选（省略则生成）；已存在 → `409` + `STATE_CONFLICT`'
+        name: { type: string, minLength: 1, maxLength: 64 }
+        provider: { $ref: '#/components/schemas/LlmProvider' }
+        baseUrl:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: '必须以 `http://` 或 `https://` 开头'
+        model: { type: string, minLength: 1, maxLength: 128 }
+        timeoutSeconds: { type: [integer, 'null'], minimum: 1, maximum: 900, description: 缺省 60 }
+        connectTimeoutSeconds: { type: [integer, 'null'], minimum: 1, maximum: 120, description: 缺省 5 }
+        allowLocalNetwork: { type: [boolean, 'null'], default: false }
+        parameters: { type: [object, 'null'], additionalProperties: true, description: 见 llm-config.schema.json 的 parameters }
+
+    CredentialRequest:
+      type: object
+      required: [apiKey]
+      properties:
+        apiKey: { type: string, minLength: 1, maxLength: 4096, writeOnly: true, description: 只写不回读，响应不含该字段 }
+
+    ValidateRequest:
+      type: object
+      required: [config]
+      properties:
+        config:
+          description: '`llm-config.json` 内容（`{ schemaVersion, defaultProfileId?, profiles[] }`）'
+
+    ValidationIssue:
+      type: object
+      required: [path, message]
+      properties:
+        path:
+          type: string
+          description: '如 `profiles[0].baseUrl`'
+        message: { type: string }
+
+    ValidationSummary:
+      type: object
+      required: [profileCount, providers]
+      properties:
+        profileCount: { type: integer }
+        providers:
+          type: array
+          items: { type: string }
+
+    ValidationResponse:
+      type: object
+      required: [valid, errors, summary]
+      properties:
+        valid: { type: boolean }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationIssue' }
+        summary: { $ref: '#/components/schemas/ValidationSummary' }
+
+    TestConnectionRequest:
+      type: object
+      description: |
+        `profile`（内联 profile 对象，可带一次性 `apiKey`）与 `profileId` 至少一个。
+        `useStoredCredential=true` 时使用 OS 凭据存储中的密钥。
+      properties:
+        profile: { type: [object, 'null'], additionalProperties: true, description: 内联 profile（形状同 ProfileView + 可选 apiKey） }
+        profileId: { type: [string, 'null'] }
+        useStoredCredential: { type: [boolean, 'null'] }
+
+    TestConnectionResponse:
+      type: object
+      required: [ok, category, latencyMs, httpStatus, modelEcho, message, suggestion]
+      properties:
+        ok: { type: boolean }
+        category: { $ref: '#/components/schemas/TestConnectionCategory' }
+        latencyMs: { type: integer }
+        httpStatus:
+          type: [integer, 'null']
+          description: '供应商返回的 HTTP 状态码；无响应时为 `null`'
+        modelEcho: { type: [string, 'null'] }
+        message: { type: string }
+        suggestion: { type: string }
+
+    ChangeItem:
+      type: object
+      required: [action, profileId, name, fields]
+      properties:
+        action: { type: string, enum: [create, update, unchanged, conflict] }
+        profileId: { type: string }
+        name: { type: string }
+        fields:
+          type: array
+          items: { type: string }
+
+    ImportPreviewRequest:
+      type: object
+      required: [config]
+      properties:
+        config:
+          description: '`llm-config.json` 内容'
+
+    ImportPreviewResponse:
+      type: object
+      required: [previewId, summary, changes, errors, expiresAt]
+      properties:
+        previewId:
+          type: string
+          description: '`prev_` 前缀；有效期 10 分钟'
+        summary: { $ref: '#/components/schemas/ValidationSummary' }
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/ChangeItem' }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/ValidationIssue' }
+        expiresAt: { type: string }
+
+    ImportConfirmRequest:
+      type: object
+      required: [previewId]
+      properties:
+        previewId: { type: string, minLength: 1 }
+
+    ImportConfirmResponse:
+      type: object
+      required: [created, updated, unchanged, configRevision]
+      properties:
+        created: { type: integer }
+        updated: { type: integer }
+        unchanged: { type: integer }
+        configRevision: { type: integer }
+
+    ExportResponse:
+      type: object
+      description: '脱敏导出的 `llm-config.json`。含 `schemaVersion`/`defaultProfileId`/`profiles`，绝不含明文密钥。'
+      additionalProperties: true
+
+    DefaultProfileRequest:
+      type: object
+      properties:
+        profileId:
+          type: [string, 'null']
+          description: '为 `null` 时必须同时传 `disableAi: true`'
+        disableAi: { type: [boolean, 'null'] }
+
+    # ---------------------------------------------------------------- 系统与任务
+    AiServiceStatus:
+      type: object
+      description: 'Python AI 服务状态（`/meta`、`/dashboard`、`/system/info` 三处形状一致）。'
+      required: [available, baseUrl, latencyMs, message]
+      properties:
+        available: { type: boolean }
+        baseUrl:
+          type: [string, 'null']
+          description: '`available=false` 时可能为 `null`'
+        latencyMs: { type: [integer, 'null'] }
+        message: { type: [string, 'null'], description: 可读原因，如"AI 服务未启动" }
+
+    MetaView:
+      type: object
+      required: [appVersion, contractVersion, schemaVersion, dataDir, databasePath, databaseSizeBytes, fts5Available, aiService, startedAt]
+      properties:
+        appVersion: { type: string }
+        contractVersion: { type: string, const: '1.0' }
+        schemaVersion: { type: integer }
+        dataDir: { type: string }
+        databasePath: { type: string }
+        databaseSizeBytes: { type: integer }
+        fts5Available: { type: boolean }
+        aiService: { $ref: '#/components/schemas/AiServiceStatus' }
+        startedAt: { type: string }
+
+    DashboardView:
+      type: object
+      required: [questionCount, publishedQuestionCount, paperCount, publishedPaperCount, inProgressAttemptCount, dueWrongQuestionCount, activeWrongQuestionCount, masteredWrongQuestionCount, recentAttempts, recentWrongQuestions, aiService]
+      properties:
+        questionCount: { type: integer }
+        publishedQuestionCount: { type: integer }
+        paperCount: { type: integer }
+        publishedPaperCount: { type: integer }
+        inProgressAttemptCount: { type: integer }
+        dueWrongQuestionCount: { type: integer }
+        activeWrongQuestionCount: { type: integer }
+        masteredWrongQuestionCount: { type: integer }
+        recentAttempts:
+          type: array
+          items: { $ref: '#/components/schemas/AttemptSummary' }
+        recentWrongQuestions:
+          type: array
+          items: { $ref: '#/components/schemas/WrongQuestionView' }
+        aiService: { $ref: '#/components/schemas/AiServiceStatus' }
+
+    BackupView:
+      type: object
+      required: [fileName, sizeBytes, checksum, createdAt, schemaVersion, appVersion, integrityOk, kind]
+      properties:
+        fileName: { type: string }
+        sizeBytes: { type: integer }
+        checksum: { type: string }
+        createdAt: { type: string }
+        schemaVersion: { type: integer }
+        appVersion: { type: string }
+        integrityOk: { type: boolean }
+        kind: { type: string, enum: [manual, auto, pre-migration] }
+
+    SystemInfoView:
+      type: object
+      required: [appVersion, schemaVersion, dataDir, logDir, databasePath, databaseSizeBytes, backupCount, backups, uptimeSeconds, credentialBackend, aiService]
+      properties:
+        appVersion: { type: string }
+        schemaVersion: { type: integer }
+        dataDir: { type: string }
+        logDir: { type: string }
+        databasePath: { type: string }
+        databaseSizeBytes: { type: integer }
+        backupCount: { type: integer }
+        backups:
+          type: array
+          items: { $ref: '#/components/schemas/BackupView' }
+        uptimeSeconds: { type: integer }
+        credentialBackend: { type: string }
+        aiService: { $ref: '#/components/schemas/AiServiceStatus' }
+
+    RestoreRequest:
+      type: object
+      required: [fileName]
+      properties:
+        fileName: { type: string, minLength: 1 }
+        confirm:
+          type: [boolean, 'null']
+          description: '必须为 `true`，否则 `400` + `VALIDATION_ERROR`'
+
+    RestoreResponse:
+      type: object
+      required: [pendingRestore, requiresRestart, backup]
+      properties:
+        pendingRestore: { type: boolean }
+        requiresRestart: { type: boolean }
+        backup:
+          oneOf:
+            - $ref: '#/components/schemas/BackupView'
+            - type: 'null'
+
+    IntegrityView:
+      type: object
+      required: [ok, integrityCheck, foreignKeyCheck, schemaVersion, databaseSizeBytes]
+      properties:
+        ok: { type: boolean }
+        integrityCheck:
+          type: string
+          description: '`PRAGMA integrity_check` 结果，正常为 `ok`'
+        foreignKeyCheck:
+          type: string
+          description: '`PRAGMA foreign_key_check` 结果，正常为 `ok`'
+        schemaVersion: { type: integer }
+        databaseSizeBytes: { type: integer }
+
+    SeedDemoResponse:
+      type: object
+      required: [questionsCreated, papersCreated, skipped]
+      properties:
+        questionsCreated: { type: integer }
+        papersCreated: { type: integer }
+        skipped: { type: boolean }
+
+    LogFileView:
+      type: object
+      required: [fileName, sizeBytes, modifiedAt]
+      properties:
+        fileName: { type: string }
+        sizeBytes: { type: integer }
+        modifiedAt: { type: string }
+
+    LogTailView:
+      type: object
+      required: [fileName, lines]
+      properties:
+        fileName: { type: string }
+        lines:
+          type: array
+          description: 尾部 N 行（默认 500），已脱敏
+          items: { type: string }
+
+    TaskView:
+      type: object
+      description: '异步任务（`SystemDtos.TaskView`）。'
+      required: [id, taskType, status, payload, result, attemptCount, maxAttempts, leaseOwner, leaseUntil, heartbeatAt, nextRunAt, lastErrorCode, lastErrorMessage, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        taskType:
+          type: string
+          description: 'v1 已实现 `ai_grade`'
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        payload: { description: 任务载荷 JSON }
+        result: { description: 任务结果 JSON }
+        attemptCount: { type: integer }
+        maxAttempts: { type: integer, default: 5 }
+        leaseOwner: { type: [string, 'null'] }
+        leaseUntil: { type: [string, 'null'] }
+        heartbeatAt: { type: [string, 'null'] }
+        nextRunAt: { type: [string, 'null'] }
+        lastErrorCode: { type: [string, 'null'] }
+        lastErrorMessage: { type: [string, 'null'] }
+        createdAt: { type: string }
+        updatedAt: { type: string }
+
+    TaskViewPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/TaskView' }
+
+    # ---------------------------------------------------------------- AI 能力
+    ExplainRequest:
+      type: object
+      description: |
+        讲解请求（`AiController.explain`）。三个字段组全部可选：`userAnswer`/`profileId` 为阶段 5 既有字段；
+        `useKnowledgeBase`/`knowledgeLimit`/`query` 为阶段 6 的检索增强开关（契约 §11.3）。
+        `useKnowledgeBase` 缺省 `false`（不注入 `references`，行为与阶段 5 完全一致）。
+        `knowledgeLimit` 实现里会被钳制到 1-10（非数字或缺省 → 5）；`query` 去空白后为空时，
+        由 Java 用「题干 + 选项」拼出检索查询（最多 200 字符）。
+      properties:
+        userAnswer: { description: 用户作答 JSON；省略则不分析错因 }
+        profileId: { type: [string, 'null'], description: 省略则使用默认档案 }
+        useKnowledgeBase:
+          type: [boolean, 'null']
+          default: false
+          description: '为 `true` 时先做本地检索，把前 N 条分块作为 `references` 交给 Python（不可信输入）'
+        knowledgeLimit:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 10
+          default: 5
+          description: '检索依据条数；实现按 `max(1, min(10, value))` 钳制'
+        query:
+          type: [string, 'null']
+          maxLength: 200
+          description: '自定义检索查询；省略或空白则用题干 + 选项拼接'
+
+    ExplainData:
+      type: object
+      additionalProperties: true
+      description: |
+        Python AI 服务 `POST /api/v1/ai/explain` 返回的 `data`，Java 原样透出。
+        字段清单与 `services/python-ai/app/schemas.py::ExplainResponse` 对齐。
+        Java 侧只对 `citations` 做一次**引用回映射**（模型给的 `citations: [{refId, used}]`
+        会被替换为带来源坐标的列表，只保留本次实际提供过的 `refId`，`used` 字段被丢弃），
+        `injectionSuspected` 等其余字段原样透出；因此这里标注 `additionalProperties: true`
+        （实现返回的是 `JsonNode` 自由对象，契约之外的字段不会被拦截）。
+      required: [explanation, tips, model, usage, latencyMs]
+      properties:
+        explanation: { type: string, description: 中文讲解：为什么成立、错在哪、怎么记 }
+        tips:
+          type: array
+          items: { type: string }
+        model: { type: string }
+        usage: { type: object, additionalProperties: true, description: 供应商返回的 token 统计 }
+        latencyMs: { type: integer }
+        credentialRef:
+          type: [string, 'null']
+          description: '形如 `credential://llm/<profileId>`，永不是明文密钥'
+        citations:
+          type: array
+          description: |
+            讲解实际引用的资料分块（契约 §11.3）。未开启 `useKnowledgeBase`、检索无命中或
+            模型未引用任何提供过的 `refId` 时为空数组；每个元素都能回到
+            `GET /api/v1/documents/{id}/chunks` 逐字核对。
+          items: { $ref: '#/components/schemas/Citation' }
+        injectionSuspected:
+          type: boolean
+          description: |
+            检索片段命中可疑指令模式的标记（仅标记与脱敏日志，不改变主流程，也不影响 `citations`）。
+            由 Python 侧计算；未开启知识库检索时为 `false`。
+
+    GradeSubjectiveResponse:
+      type: object
+      description: |
+        Python 服务 `POST /api/v1/ai/grade-subjective` 的响应形状（`SystemDtos.GradeSubjectiveResponse`
+        用于 `ai_grade` 任务的中间结果；Java 侧不直接对外暴露该端点，对外走
+        `/api/v1/attempts/{id}/answers/{snapshotQuestionId}/grade`）。
+      required: [snapshotQuestionId, suggestedScore, maxScore, gradingStatus, gradingDetail, message]
+      properties:
+        snapshotQuestionId: { type: string }
+        suggestedScore: { type: [number, 'null'], format: double }
+        maxScore: { type: number, format: double }
+        gradingStatus: { $ref: '#/components/schemas/GradingStatus' }
+        gradingDetail:
+          description: '含 `suggestedScore`、`criteria`、`confidence`、`needsReview`'
+        message: { type: string }
+
+    # ---------------------------------------------------------------- 资料库与本地检索（§11）
+    DocumentStatus:
+      type: string
+      description: '资料状态（`imported`/`indexed`/`failed`；`status` 查询参数只接受这三个值）'
+      enum: [imported, indexed, failed]
+
+    DocumentSummary:
+      type: object
+      description: |
+        资料摘要（`DocumentDtos.DocumentSummary`，与 `DocumentRepository.toSummary` 一致）。
+        `originalFileName`/`sha256` 在文件记录缺失时是**空字符串**而不是 `null`（实现里的兜底值）。
+      required: [id, title, status, sourceKind, originalFileName, sizeBytes, sha256, chunkCount, charCount, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string, maxLength: 200 }
+        status: { $ref: '#/components/schemas/DocumentStatus' }
+        sourceKind:
+          type: string
+          enum: [text, markdown]
+          description: '`text`（`.txt`）或 `markdown`（`.md`/`.markdown`）'
+        originalFileName:
+          type: string
+          description: '原始文件名，只作显示元数据；文件记录缺失时为空字符串'
+        sizeBytes: { type: integer, minimum: 0 }
+        sha256:
+          type: string
+          description: '文件内容 SHA-256（64 位小写十六进制）；文件记录缺失时为空字符串'
+        chunkCount: { type: integer, minimum: 0 }
+        charCount: { type: integer, minimum: 0 }
+        indexVersion: { type: [integer, 'null'], minimum: 1 }
+        parserVersion:
+          type: [string, 'null']
+          description: '解析器版本，如 `text-v1+utf8`；未解析时为 `null`'
+        errorCode:
+          type: [string, 'null']
+          description: '`status=failed` 时的错误码（如 `DOCUMENT_PARSE_FAILED`），其它状态为 `null`'
+        errorMessage:
+          type: [string, 'null']
+          description: '`status=failed` 时的可读原因，已脱敏、不含文件绝对路径'
+        createdAt: { type: string }
+        updatedAt: { type: string }
+
+    DocumentSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/DocumentSummary' }
+
+    ChunkView:
+      type: object
+      description: '资料分块（`DocumentDtos.ChunkView`）。`pageNo` 首期为 `null`（纯文本无页码）。'
+      required: [id, documentId, chunkIndex, content, contentHash, parserVersion, indexVersion, createdAt]
+      properties:
+        id: { type: string, description: '分块 id（`chk_` 前缀）' }
+        documentId: { type: string }
+        chunkIndex: { type: integer, minimum: 0 }
+        pageNo: { type: [integer, 'null'], minimum: 1 }
+        content: { type: string }
+        contentHash: { type: string, description: 分块内容 SHA-256 }
+        parserVersion: { type: string }
+        indexVersion: { type: integer, minimum: 1 }
+        createdAt: { type: string }
+
+    ChunkViewPage:
+      allOf:
+        - $ref: '#/components/schemas/PageResult'
+        - type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ChunkView' }
+
+    DocumentImportRequest:
+      type: object
+      description: |
+        导入文本资料请求（`DocumentDtos.ImportRequest`）。`sourcePath` 必填（绝对路径），
+        服务端会重新计算 SHA-256 与 `sha256` 比对（防 TOCTOU）；`onDuplicate` 缺省 `reject`。
+      required: [sourcePath]
+      properties:
+        sourcePath:
+          type: string
+          minLength: 1
+          description: '来源文件绝对路径；文件不存在/非普通文件/路径越界 → `400` + `VALIDATION_ERROR`'
+        sha256:
+          type: [string, 'null']
+          description: '客户端预先算好的 SHA-256；与服务端重算结果不一致 → `400` + `VALIDATION_ERROR`'
+        title:
+          type: [string, 'null']
+          maxLength: 200
+          description: '显示标题；省略则用文件名（去扩展名），最长截断到 200 字符'
+        onDuplicate:
+          type: [string, 'null']
+          default: reject
+          description: |
+            重复 `sha256` 的处理方式，取值 `reject` | `reuse` | `new`（其它值 → `400` + `VALIDATION_ERROR`）。
+            实现先把缺省/空白归一化为 `reject`，因此文档里额外允许 `null`（等价于省略）。
+          enum: [reject, reuse, new, 'null']
+
+    DocumentDeleteResponse:
+      type: object
+      description: '删除结果（`DocumentDtos.DocumentDeleteResponse`）。'
+      required: [deleted, fileRemoved]
+      properties:
+        deleted: { type: boolean }
+        fileRemoved:
+          type: boolean
+          description: '仅当同一 `sha256` 已无其它资料引用、且磁盘文件确实被删除时为 `true`'
+
+    IndexRebuildResponse:
+      type: object
+      description: |
+        索引重建结果（`DocumentDtos.IndexRebuildResponse`）。成功时 `failures` 恒为空数组
+        （实现只在失败分支累积明细并抛 `DOCUMENT_INDEX_FAILED`）。
+      required: [indexState, chunks, failures]
+      properties:
+        indexState: { $ref: '#/components/schemas/IndexState' }
+        chunks: { type: integer, minimum: 0, description: 新版本写入的分块总数 }
+        failures:
+          type: array
+          description: '非致命失败明细（`标题：原因`）；成功时为空数组'
+          items: { type: string }
+
+    IndexState:
+      type: object
+      description: '索引版本状态（`DocumentDtos.IndexState`）。`document_fts` 只存可检索文本与 `chunk_id`。'
+      required: [indexName, activeVersion, updatedAt, fts5Available, documentCount, chunkCount]
+      properties:
+        indexName: { type: string, const: document_fts }
+        activeVersion: { type: integer, minimum: 1, description: 检索只读该版本的分块 }
+        buildingVersion:
+          type: [integer, 'null']
+          minimum: 1
+          description: '正在构建的新版本；无构建进行中时为 `null`'
+        updatedAt: { type: string }
+        fts5Available:
+          type: boolean
+          description: 'FTS5 + trigram 能力探测结果；`false` 时检索恒走关键词降级路径'
+        documentCount: { type: integer, minimum: 0 }
+        chunkCount: { type: integer, minimum: 0, description: '`activeVersion` 的分块数' }
+
+    SearchHit:
+      type: object
+      description: |
+        检索命中（`DocumentDtos.SearchHit`）。`snippet` 用 `[[` / `]]` 标记命中词，
+        客户端必须按纯文本渲染（不得当 HTML 注入）。
+      required: [documentId, chunkId, title, chunkIndex, snippet, score, matchMode]
+      properties:
+        documentId: { type: string }
+        chunkId: { type: string }
+        title: { type: string }
+        pageNo: { type: [integer, 'null'], minimum: 1 }
+        chunkIndex: { type: integer, minimum: 0 }
+        snippet:
+          type: string
+          description: '命中片段（`[[命中词]]`）；固定窗口，非 HTML'
+        score:
+          type: number
+          format: double
+          description: |
+            越大越相关。FTS5 路径 `score = -bm25`；关键词路径
+            `score = 1000/(1+首次命中位置) + min(50, 命中次数×5)`（契约 §11.4）
+        matchMode:
+          type: string
+          enum: [fts5, keyword]
+          description: '本次实际生效的检索实现'
+
+    SearchResponse:
+      type: object
+      description: '检索结果（`DocumentDtos.SearchResponse`）。`total` 等于本次返回的 `results` 长度（无总数查询）。'
+      required: [query, mode, tookMs, total, results]
+      properties:
+        query:
+          type: string
+          description: '实际执行的查询串（已 trim）'
+        mode:
+          type: string
+          enum: [fts5, keyword]
+        tookMs: { type: integer, minimum: 0 }
+        total: { type: integer, minimum: 0 }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/SearchHit' }
+
+    OrphanFile:
+      type: object
+      description: '孤儿文件：磁盘存在但 `imported_file` 无记录（`DocumentDtos.OrphanFile`）。'
+      required: [fileId, relativePath, sizeBytes, modifiedAt]
+      properties:
+        fileId:
+          type: string
+          description: '目录名（`files/imports/<fileId>/`）；目录下每个过期文件各一条记录'
+        relativePath:
+          type: string
+          description: '相对数据目录的路径（正斜杠），绝不返回绝对路径'
+        sizeBytes: { type: integer, minimum: 0 }
+        modifiedAt:
+          type: string
+          description: '文件修改时间（UTC ISO-8601）；读取失败时为空字符串'
+
+    MissingFile:
+      type: object
+      description: '缺失文件：数据库有记录但磁盘文件不存在（`DocumentDtos.MissingFile`）。'
+      required: [documentId, title, relativePath]
+      properties:
+        documentId: { type: string }
+        title: { type: string }
+        relativePath: { type: string }
+
+    FileConsistencyReport:
+      type: object
+      description: '文件一致性报告（`DocumentDtos.FileConsistencyReport`）。'
+      required: [orphanFiles, missingFiles, tempFiles, retentionHours]
+      properties:
+        orphanFiles:
+          type: array
+          description: '已超过保留窗口的孤儿文件，按 `relativePath` 升序'
+          items: { $ref: '#/components/schemas/OrphanFile' }
+        missingFiles:
+          type: array
+          items: { $ref: '#/components/schemas/MissingFile' }
+        tempFiles: { type: integer, minimum: 0, description: 'temp 目录下的文件数（未按保留窗口过滤）' }
+        retentionHours: { type: integer, description: '保留窗口小时数，实现里固定 24' }
+
+    FileCleanupRequest:
+      type: object
+      description: '一致性补偿请求；整个请求体可省略（等价于 `dryRun=true`）。'
+      properties:
+        dryRun:
+          type: [boolean, 'null']
+          default: true
+          description: '`true` 只报告不修改；只有显式 `false` 才执行删除与标记'
+
+    FileCleanupResponse:
+      type: object
+      description: '一致性补偿结果（`DocumentDtos.FileCleanupResponse`）。'
+      required: [removedFiles, markedFailed, dryRun]
+      properties:
+        removedFiles: { type: integer, minimum: 0, description: '删除的孤儿文件与过期临时文件总数；dry-run 下恒为 0' }
+        markedFailed:
+          type: integer
+          minimum: 0
+          description: '被标记为 `failed` 的资料数；dry-run 下统计的是**将被**标记的数量'
+        dryRun: { type: boolean }
+
+    Citation:
+      type: object
+      description: |
+        讲解引用（Java 侧回映射后的形状，契约 §11.3）：`refId` 必须来自本次实际提供过的集合，
+        且 `documentId`/`chunkId` 能回到真实分块逐字核对（模型给的 `used` 字段在回映射时被丢弃）。
+      required: [refId, documentId, chunkId, title, snippet]
+      properties:
+        refId:
+          type: string
+          description: '模型引用标识，形如 `K1`；未提供过的 `refId` 一律丢弃'
+        documentId: { type: string }
+        chunkId: { type: string }
+        title: { type: string }
+        pageNo: { type: [integer, 'null'], minimum: 1 }
+        snippet:
+          type: string
+          description: '分块内容前 200 字符（纯文本，非 HTML）'
